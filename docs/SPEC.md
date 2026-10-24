@@ -1,10 +1,10 @@
-# dxtrans 設計仕様書
+# dxtran 設計仕様書
 
 状態: 初期設計案 / 仕様版: 0.15 / 作成日: 2026-10-22 / 更新日: 2026-10-25
 
 ## 1. 目的と設計上の前提
 
-dxtrans（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長ファイルを読み込み、Apache DataFusion の SQL で編集・変換し、CSV、固定長または RDW 付き可変長ファイルへ出力するバッチ処理ツールとする。複数の入力の結合、抽出、項目追加、型変換、集計、並べ替え、複数形式への出力を、1つの YAML ファイルで定義する。
+dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長ファイルを読み込み、Apache DataFusion の SQL で編集・変換し、CSV、固定長または RDW 付き可変長ファイルへ出力するバッチ処理ツールとする。複数の入力の結合、抽出、項目追加、型変換、集計、並べ替え、複数形式への出力を、1つの YAML ファイルで定義する。
 
 項目は YAML に直接定義する。定義の任意の枝は `import` で再利用し、利用側で上書きできる。`process` は WITH 句のように参照する中間データセットを定義し、最終的な編集・集計 SQL は `output` に直接指定できる。順序を明示しなければ、元ファイルのレコード順を維持する。
 
@@ -73,7 +73,7 @@ output: []
 - YAML は UTF-8 とし、相対パスはその値を書いた YAML ファイルの所在ディレクトリから解決する。import 元から引き継いだ値と利用側で上書きした値は、それぞれの記述元を基準にする。カレントディレクトリには依存しない。
 - 初期版は1入力定義につき1ファイル、1出力定義につき1ファイル。glob、ディレクトリ入力、標準入出力は扱わない。
 - 環境変数やテンプレートの展開は行わない。実行時のメモリ量等は CLI オプションで指定し、最上位キーを増やさない。
-- サポートする設定文法は dxtrans のバージョンと対応させる。破壊的変更は互換性変更として明示する。
+- サポートする設定文法は dxtran のバージョンと対応させる。破壊的変更は互換性変更として明示する。
 
 ## 5. 設定の全体例
 
@@ -258,14 +258,14 @@ input:
 
 ### 6.5 encoding の解決と文字コード変換
 
-`encoding_rs::Encoding::for_label()` が認識する全ラベル・別名を受け付ける。大文字小文字や前後の ASCII 空白の扱いも同 API に従い、認識できない値は設定エラーとする。`utf-8`、`shift_jis`、`euc-jp`、`iso-2022-jp`、`gb18030`、`windows-1252`、`ibm866`、`utf-16le`、`utf-16be` 等を指定できる。既存例の `cp932` は dxtrans 側の別名として `shift_jis` に解決する。ログには指定値と正規名を残す。[encoding_rs: Encoding](https://docs.rs/encoding_rs/latest/encoding_rs/struct.Encoding.html)
+`encoding_rs::Encoding::for_label()` が認識する全ラベル・別名を受け付ける。大文字小文字や前後の ASCII 空白の扱いも同 API に従い、認識できない値は設定エラーとする。`utf-8`、`shift_jis`、`euc-jp`、`iso-2022-jp`、`gb18030`、`windows-1252`、`ibm866`、`utf-16le`、`utf-16be` 等を指定できる。既存例の `cp932` は dxtran 側の別名として `shift_jis` に解決する。ログには指定値と正規名を残す。[encoding_rs: Encoding](https://docs.rs/encoding_rs/latest/encoding_rs/struct.Encoding.html)
 
 - CSV はファイル全体を同じデコーダーで逐次 UTF-8 に変換してから解析し、出力は CSV を組み立ててから同じエンコーダーで変換する。状態を持つ文字コードの状態をフィールドやバッファごとにリセットしない。
 - fixed / rdw はまずバイトでレコード・項目を切り出し、`string` / `decimal` / `boolean` / `date` / `time` / `timestamp` 項目を文字コード変換する。各文字項目は独立した文字列として状態を初期化・終端処理する。途中状態を隣の項目へ持ち越さない。
 - `binary` / `bits`、数値のバイナリ表現、ゾーン / パック10進数は、7節のバイト規則で処理する。ファイル全体を文字コード変換して数値領域を破壊しない。
 - 不正なバイト列と変換できない文字はエラーにし、代替文字や数値文字参照へ置換しない。[encoding_rs: Encoder](https://docs.rs/encoding_rs/latest/encoding_rs/struct.Encoder.html)
 - CSV は指定した UTF-8 / UTF-16LE / UTF-16BE と一致する先頭 BOM だけを除去する。BOM で指定文字コードを変更しない。不一致の BOM はエラー。出力は BOM を付けない。fixed / rdw は BOM の自動除去を行わず、バイト位置を維持する。
-- encoding_rs の UTF-16 エンコーダー要求は UTF-8 出力になるため、UTF-16LE / BE の出力は dxtrans が `encode_utf16()` と指定したバイト順で実装する。指定した UTF-16 を UTF-8 で黙って出力しない。
+- encoding_rs の UTF-16 エンコーダー要求は UTF-8 出力になるため、UTF-16LE / BE の出力は dxtran が `encode_utf16()` と指定したバイト順で実装する。指定した UTF-16 を UTF-8 で黙って出力しない。
 - `replacement` に解決されるラベルも認識対象とする。非空入力は厳密デコードのエラーになり、出力は encoding_rs の `output_encoding()` に従う UTF-8 とし、実際の出力文字コードをログに明示する。この特殊な文字コードに復元可能な固有バイト表現はない。[encoding_rs: UTF-16 and output encodings](https://docs.rs/encoding_rs/latest/encoding_rs/#utf-16le-utf-16be-and-unicode-encoding-schemes)
 
 対応集合と別名の意味は採用する encoding_rs の版とともに固定する。encoding_rs にない文字コードは受け付けない。例えば EBCDIC の文字列デコードはこの集合に含まれないが、数値の EBCDIC ゾーン表現は `zone: ebcdic` としてバイト処理できる。
@@ -396,7 +396,7 @@ UTF-16 の wstring 相当の文字列も、`type: string` とファイルの `en
 
 文字列で保存された日付時刻を `datetime_pattern` で解析し、Arrow の日付時刻型で計算する。全形式で input.fields / output.fields の各項目に同じ指定を使う。fixed / rdw の既定 trim は `both`、出力は左寄せとする。
 
-パターンは Unicode UTS #35 の Date Format Patterns（LDML）に基づく。以下に初期版の対応範囲と dxtrans の厳密な入出力規則を定める。パターン文字の意味と反復数を保持して解釈し、単純な文字列置換で別の書式へ変換しない。[Unicode UTS #35: Date format patterns](https://www.unicode.org/reports/tr35/tr35-79/tr35-dates.html#Date_Format_Patterns)
+パターンは Unicode UTS #35 の Date Format Patterns（LDML）に基づく。以下に初期版の対応範囲と dxtran の厳密な入出力規則を定める。パターン文字の意味と反復数を保持して解釈し、単純な文字列置換で別の書式へ変換しない。[Unicode UTS #35: Date format patterns](https://www.unicode.org/reports/tr35/tr35-79/tr35-dates.html#Date_Format_Patterns)
 
 **既定パターン**
 
@@ -411,7 +411,7 @@ UTF-16 の wstring 相当の文字列も、`type: string` とファイルの `en
 
 **パターンの対応範囲**
 
-| 記号 | 意味と dxtrans の規則 |
+| 記号 | 意味と dxtran の規則 |
 | --- | --- |
 | `y` / `yy` / `yyy` / `yyyy` 等 | 暦年。`yy` 以外の反復数は出力の最小桁数。元号を指定しない西暦として扱う |
 | `u` / `uuuu` 等 | グレゴリオ暦の拡張年。年0や負の年を扱う場合に使う |
@@ -555,7 +555,7 @@ bits 配列は1件以上とし、範囲外・整数でないビット番号、�
 - `uzoned`: 符号を持たず、各 zone の通常の数字だけを認める。負数の書き込みはエラーとする。
 - 数字の下位ニブルは0〜9に限定し、上位ニブルも指定した体系を検証する。異なる体系の自動判定は行わない。
 
-ゾーン表現と符号体系には処理系差があるため、dxtrans の入出力は上記の規則に固定する。[IBM: Zoned decimal](https://www.ibm.com/docs/en/iis/11.5.0?topic=listing-zoned)、[IBM DFSORT: Data format examples](https://www.ibm.com/docs/en/SSLTBW_2.5.0/pdf/icea100_v2r5.pdf)
+ゾーン表現と符号体系には処理系差があるため、dxtran の入出力は上記の規則に固定する。[IBM: Zoned decimal](https://www.ibm.com/docs/en/iis/11.5.0?topic=listing-zoned)、[IBM DFSORT: Data format examples](https://www.ibm.com/docs/en/SSLTBW_2.5.0/pdf/icea100_v2r5.pdf)
 
 ### 7.6 パック10進数
 
@@ -1036,7 +1036,7 @@ GROUPING SETS 等で同じ元行が複数グループの最初の行になる場
 
 出力直前と LIMIT / OFFSET 等の順序が観測される位置に、必要なソートまたは順序付きマージを入れる。既に必要な順序を満たす物理計画なら追加ソートを省く。順序情報を失う演算を通したまま、保証なしで実行する経路は設けない。並列度1への設定だけを順序保証の根拠にしない。
 
-順序伝搬は dxtrans の計画変換として実装する。DataFusion の論理・物理計画の拡張点を使い、最適化後の出力順序も検証する。[DataFusion: Extending Operators](https://datafusion.apache.org/library-user-guide/extending-operators.html)
+順序伝搬は dxtran の計画変換として実装する。DataFusion の論理・物理計画の拡張点を使い、最適化後の出力順序も検証する。[DataFusion: Extending Operators](https://datafusion.apache.org/library-user-guide/extending-operators.html)
 
 ## 12. 実行とファイルの公開
 
@@ -1053,7 +1053,7 @@ GROUPING SETS 等で同じ元行が複数グループの最初の行になる場
 
 ### 12.2 公開の保証と限界
 
-出力用の一時ファイルは tmp フォルダに作成する。tmp フォルダは14節の `--temp-dir` で指定し、省略時は OS の一時ディレクトリ（例えば `/tmp`）を使う。実行ごとに `dxtrans-<run_id>/` を排他的に作成し、出力用の一時ファイルをその `outputs/`、DataFusion の spill を `spill/` に分けて置く。tmp フォルダ自体が未作成なら既存の祖先ディレクトリを基準にパスを検証し、`run` の実行時に必要なディレクトリを作成する。`check` / `explain` では作成しない。
+出力用の一時ファイルは tmp フォルダに作成する。tmp フォルダは14節の `--temp-dir` で指定し、省略時は OS の一時ディレクトリ（例えば `/tmp`）を使う。実行ごとに `dxtran-<run_id>/` を排他的に作成し、出力用の一時ファイルをその `outputs/`、DataFusion の spill を `spill/` に分けて置く。tmp フォルダ自体が未作成なら既存の祖先ディレクトリを基準にパスを検証し、`run` の実行時に必要なディレクトリを作成する。`check` / `explain` では作成しない。
 
 tmp フォルダと各出力先は、同一ファイルシステム上で rename / replace が可能な構成を必須とする。異なるファイルシステムや rename できないマウント構成は、実行前のパス検証で設定エラーにする。コピーと削除へのフォールバックは行わず、ファイル単位の原子的な公開を維持する。実行中に構成が変わる等して最終 rename / replace に失敗した場合は、公開失敗として扱う。[Rust: std::fs::rename](https://doc.rust-lang.org/std/fs/fn.rename.html)
 
@@ -1061,11 +1061,11 @@ tmp フォルダと各出力先は、同一ファイルシステム上で rename
 
 保証単位は1ファイルであり、複数ファイル全体を原子的に更新することはできない。公開途中で失敗した場合、先に公開したファイルは残る。公開済み・未公開の出力 ID とパスをエラーに記録し、自動ロールバックや自動再実行はしない。複数出力を一括切り替えする仕組みは後続の拡張対象とする。
 
-正常終了・通常のエラー・中断では、自分の実行専用ディレクトリ内の一時ファイルと spill を削除し、そのディレクトリを解放する。強制終了・電源断で残る可能性があるため、作業ディレクトリ名には dxtrans の識別子と実行 ID を含める。tmp フォルダ自体や別の実行の作業ディレクトリは自動削除しない。電源断時の永続性は、公開前のファイル同期と、rename / replace 後の一時側・出力側それぞれの親ディレクトリの同期を含め OS ごとに実装・検証する。
+正常終了・通常のエラー・中断では、自分の実行専用ディレクトリ内の一時ファイルと spill を削除し、そのディレクトリを解放する。強制終了・電源断で残る可能性があるため、作業ディレクトリ名には dxtran の識別子と実行 ID を含める。tmp フォルダ自体や別の実行の作業ディレクトリは自動削除しない。電源断時の永続性は、公開前のファイル同期と、rename / replace 後の一時側・出力側それぞれの親ディレクトリの同期を含め OS ごとに実装・検証する。
 
 ## 13. DataFusion との接続とリソース管理
 
-- `SessionContext` に入力の `TableProvider` と中間データセットのビューを登録する。DataFusion の SQL 計画に dxtrans の順序伝搬を組み込み、出力ごとの SQL を実行する。
+- `SessionContext` に入力の `TableProvider` と中間データセットのビューを登録する。DataFusion の SQL 計画に dxtran の順序伝搬を組み込み、出力ごとの SQL を実行する。
 - SQL セッションのタイムゾーンは UTC を明示して実行環境に依存させず、項目の `timezone` は Reader / Writer と Arrow のメタデータへ明示的に反映する。タイムゾーンなしの日時はその状態を維持する。
 - Reader は `SendableRecordBatchStream` を返し、Writer は逐次消費する。バッチ出力には `execute_stream` 相当を使い、通常経路では `collect()` で全結果を保持しない。[DataFusion: DataFrame API](https://datafusion.apache.org/library-user-guide/using-the-dataframe-api.html)
 - CSV は UTF-8 変換後にストリームの字句解析を行い、値と引用符の有無を保持する。空行をスキップせず、NULL と空文字を区別できる Reader / Writer を用意する。既存パーサーを使う場合もこの情報が必要であり、値だけを返す API には依存しない。fixed / rdw は各フレーマーで本体を取り出してから統合した型変換を行う。
