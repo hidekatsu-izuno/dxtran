@@ -1,3 +1,3 @@
-# dxtrans
+# dxtran
 
-コマンド名: `dxt`。
+command name: `dxt`
