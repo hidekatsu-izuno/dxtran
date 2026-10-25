@@ -1,0 +1,23 @@
+input:
+  - id: sales
+    format: csv
+    path: sales.csv
+    encoding: utf-8
+    fields:
+      - {name: customer_id}
+      - {name: amount, type: decimal, precision: 9, scale: 2}
+      - {name: status}
+process:
+  - id: active_sales
+    sql: SELECT customer_id, amount FROM sales WHERE status = 'A'
+output:
+  - id: totals
+    sql: |
+      SELECT customer_id, SUM(amount) AS total
+      FROM active_sales
+      GROUP BY customer_id
+    format: csv
+    path: totals.csv
+    encoding: utf-8
+    fields:
+      - {name: customer_id, quote_style: always}
