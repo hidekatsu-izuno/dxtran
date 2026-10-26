@@ -70,7 +70,8 @@ output: []
 - 各定義に `id` を付ける。`input` と `process` の ID は同じ SQL テーブル名の名前空間を共有し、重複を禁止する。出力 ID は出力内で一意とする。
 - ID と公開列名は `[a-z][a-z0-9_]*` とし、SQL では予約語に当たる場合に二重引用符で囲む。
 - 重複した YAML キー、複数 YAML ドキュメント、独自タグ、アンカー・エイリアスは設定エラーとする。値は YAML 1.2 に従って型を解釈する。`import` を展開してから、結果の不明なキーと型を検証する。
-- YAML は UTF-8 とし、相対パスはその値を書いた YAML ファイルの所在ディレクトリから解決する。import 元から引き継いだ値と利用側で上書きした値は、それぞれの記述元を基準にする。カレントディレクトリには依存しない。
+- YAML は UTF-8 とし、YAML の相対パスはその値を書いた YAML ファイルの所在ディレクトリから解決する。import 元から引き継いだ値と利用側で上書きした値は、それぞれの記述元を基準にする。CLI で指定した入出力パスは起動時のカレントディレクトリを基準にする。
+- input / output の `path` は YAML では省略できる。CLI の `--input.<id>.path` / `--output.<id>.path` を指定した場合は、import 展開後の該当 ID の値より優先する。各パスは YAML または CLI のいずれかで指定する必要がある。
 - 初期版は1入力定義につき1ファイル、1出力定義につき1ファイル。glob、ディレクトリ入力、標準入出力は扱わない。
 - 環境変数やテンプレートの展開は行わない。実行時のメモリ量等は CLI オプションで指定し、最上位キーを増やさない。
 - サポートする設定文法は dxtran のバージョンと対応させる。破壊的変更は互換性変更として明示する。
@@ -175,7 +176,7 @@ output:
 | --- | --- | --- |
 | `id` | 必須 | SQL から参照するテーブル名 |
 | `format` | 必須 | `csv`、`fixed`、`rdw`、`parquet` |
-| `path` | 必須 | 入力ファイルのパス |
+| `path` | 任意 | 入力ファイルのパス。省略時は CLI の `--input.<id>.path` で指定する |
 | `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。省略時は非圧縮。6.7節参照 |
 | `encoding` | parquet 以外で必須 | encoding_rs が認識する文字コードラベル。6.5節参照。parquet では指定不可 |
 | `fields` | parquet 以外で必須 | CSV は列名・type・NULL 許容、fixed / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
@@ -273,7 +274,7 @@ input:
 
 ### 6.6 Parquet のネイティブスキーマ
 
-`format: parquet` はローカルの単一ファイルを読み書きする。入力は `id`・`format`・`path`、出力はこれらに加えて `sql` を指定する。`encoding`・`fields`・`csv`・`fixed`・`rdw` は指定しない。
+`format: parquet` はローカルの単一ファイルを読み書きする。入力は `id`・`format`、出力はこれらに加えて `sql` を指定する。`path` は YAML または CLI で指定する。`encoding`・`fields`・`csv`・`fixed`・`rdw` は指定しない。
 
 入力はフッターから列名・列順・論理型・NULL許容を取得する。CSVのような値に基づく型推論は行わない。公開列名には4節の識別子規則を適用し、重複・不正な名前は設定エラーとする。文字列、整数、浮動小数点、Decimal、真偽値、日付・時刻・タイムスタンプ、バイナリ、リスト・構造体などをArrowとして保持する。CSV・固定長・RDWへ出力する際は、出力形式で扱える型・幅へ必要に応じてSQLでCASTや展開を行う。
 
@@ -926,7 +927,8 @@ INNER JOIN customers AS c ON s.customer_id = c.customer_id
 | --- | --- | --- |
 | `id` | 必須 | ログとエラーで使う出力 ID |
 | `sql` | 必須 | 出力するデータを定義する1つの SELECT 系クエリ |
-| `format` / `path` | 必須 | `csv` / `fixed` / `rdw` / `parquet`、ファイル名 |
+| `format` | 必須 | `csv` / `fixed` / `rdw` / `parquet` |
+| `path` | 任意 | 出力ファイルのパス。省略時は CLI の `--output.<id>.path` で指定する |
 | `encoding` | parquet 以外で必須 | 6.5節の文字コード。parquet では指定不可 |
 | `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。Parquet は `parquet.compression` を使用 |
 | `mode` | 任意 | `error_if_exists`（既定）または `overwrite` |
@@ -1166,7 +1168,12 @@ dxt run job.yml
 
 # 実行資源を指定する
 dxt run job.yml --memory-limit 1GiB --temp-dir ./tmp --threads 4
+
+# 入出力ファイルを指定する（YAML の path は省略可能）
+dxt run job.yml --input.sales.path=sales.csv --output.details.path=details.csv
 ```
+
+`--input.<id>.path` と `--output.<id>.path` は `check`・`explain`・`run` で共通して使える。`<id>` は配列の位置ではなく定義の `id` とし、引数の値は import 展開後の YAML の `path` を上書きする。`--input.sales.path=sales.csv` と `--input.sales.path sales.csv` の両方を受け付ける。CLI の相対パスは起動時のカレントディレクトリから解決し、YAML の相対パスは従来どおり記述元から解決する。存在しない ID、空のパス、同じオプションの重複、YAML と CLI の両方での未指定は設定エラーとする。展開結果のハッシュには CLI によるパスの上書きも反映する。
 
 `check` は入力ヘッダー等のメタデータを読み得るが、出力を作らない。`check --scan` は処理 SQL の結果値や出力可能な桁数まで保証するものではない。`explain` も実行時計算やデータ値の検証は行わない。実行時オプションを省略した場合は共通の既定値を使う。`--temp-dir` は出力用一時ファイルと spill に使う tmp フォルダで、既定は OS の一時ディレクトリとする。明示した相対パスは CLI 起動時のカレントディレクトリを基準に解決する。出力先と同一ファイルシステムで rename / replace できる場所を指定する。
 

@@ -19,7 +19,7 @@ async-trait = "0.1"
 base64 = "0.22"
 chrono = "0.4"
 chrono-tz = "0.10"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "string"] }
 datafusion = { version = "=55.2.0", default-features = false, features = ["sql", "unicode_expressions", "datetime_expressions", "regex_expressions", "string_expressions", "nested_expressions"] }
 encoding_rs = "=0.8.35"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

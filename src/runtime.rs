@@ -8,7 +8,7 @@ use crate::{
     planner, sink,
     source::InputReader,
 };
-use clap::{Args, Parser, Subcommand};
+use clap::{Arg, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use datafusion::{
     execution::{
         disk_manager::{DiskManagerBuilder, DiskManagerMode},
@@ -22,6 +22,8 @@ use datafusion::{
 use futures::StreamExt;
 use serde_json::json;
 use std::{
+    collections::BTreeSet,
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -37,9 +39,13 @@ use std::{
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
+    #[arg(skip)]
+    paths: config::PathOverrides,
 }
+const PATH_HELP: &str = "File paths (override YAML; relative to the current directory):\n  --input.<id>.path <PATH>\n  --output.<id>.path <PATH>\nExample: --input.sales.path=sales.csv";
 #[derive(Subcommand)]
 enum Command {
+    #[command(after_help = PATH_HELP)]
     Check {
         job: PathBuf,
         #[arg(long)]
@@ -47,16 +53,62 @@ enum Command {
         #[command(flatten)]
         resources: Resources,
     },
+    #[command(after_help = PATH_HELP)]
     Explain {
         job: PathBuf,
         #[command(flatten)]
         resources: Resources,
     },
+    #[command(after_help = PATH_HELP)]
     Run {
         job: PathBuf,
         #[command(flatten)]
         resources: Resources,
     },
+}
+fn parse_cli(args: impl IntoIterator<Item = OsString>) -> clap::error::Result<Cli> {
+    let args: Vec<_> = args.into_iter().collect();
+    // Register dataset-specific options before letting clap parse values and
+    // report unknown options, duplicate arguments, and missing values.
+    let mut flags = BTreeSet::new();
+    for arg in args.iter().skip(1).take_while(|arg| *arg != "--") {
+        let arg = arg.to_string_lossy();
+        let flag = arg.split('=').next().unwrap();
+        if let Some(flag) = flag.strip_prefix("--")
+            && let Some((section, rest)) = flag.split_once('.')
+            && matches!(section, "input" | "output")
+            && let Some(id) = rest.strip_suffix(".path")
+            && config::identifier(id)
+        {
+            flags.insert(flag.to_owned());
+        }
+    }
+    let command = Cli::command().mut_subcommands(|subcommand| {
+        subcommand.args(flags.iter().map(|flag| {
+            Arg::new(flag.clone())
+                .long(flag.clone())
+                .value_name("PATH")
+                .value_parser(clap::value_parser!(PathBuf))
+        }))
+    });
+    let matches = command.try_get_matches_from(args)?;
+    let mut paths = config::PathOverrides::default();
+    if let Some((_, subcommand)) = matches.subcommand() {
+        for flag in flags {
+            if let Some(path) = subcommand.get_one::<PathBuf>(&flag).cloned() {
+                let (section, rest) = flag.split_once('.').unwrap();
+                let id = rest.strip_suffix(".path").unwrap().to_owned();
+                if section == "input" {
+                    paths.input.insert(id, path);
+                } else {
+                    paths.output.insert(id, path);
+                }
+            }
+        }
+    }
+    let mut cli = Cli::from_arg_matches(&matches)?;
+    cli.paths = paths;
+    Ok(cli)
 }
 #[derive(Clone, Debug, Args)]
 pub struct Resources {
@@ -184,7 +236,7 @@ async fn execute(cli: Cli, run_id: &str) -> Result<()> {
         Command::Explain { job, resources } => (job, resources, false, false, true),
         Command::Run { job, resources } => (job, resources, true, false, false),
     };
-    let job = config::load(&path)?;
+    let job = config::load_with_paths(&path, &cli.paths)?;
     let temp = resources
         .temp_dir
         .clone()
@@ -345,7 +397,7 @@ async fn execute(cli: Cli, run_id: &str) -> Result<()> {
     Ok(())
 }
 pub fn main_cli() -> i32 {
-    let cli = match Cli::try_parse() {
+    let cli = match parse_cli(std::env::args_os()) {
         Ok(c) => c,
         Err(e) => {
             let code = if e.use_stderr() { 2 } else { 0 };

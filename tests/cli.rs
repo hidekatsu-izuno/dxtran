@@ -36,6 +36,148 @@ fn out(sql: &str, path: &str) -> Value {
     json!({"id":"result","sql":sql,"format":"csv","encoding":"utf-8","path":path})
 }
 #[test]
+fn optional_paths_work_in_all_commands_from_the_current_directory() {
+    let d = tempfile::tempdir().unwrap();
+    let config = d.path().join("config");
+    fs::create_dir(&config).unwrap();
+    fs::write(d.path().join("sales = 売上.csv"), "value\nfirst\nsecond\n").unwrap();
+    let mut input = csv("sales", "unused.csv", json!([{"name":"value"}]));
+    input.as_object_mut().unwrap().remove("path");
+    let mut output = out("SELECT * FROM sales", "unused.csv");
+    output.as_object_mut().unwrap().remove("path");
+    write_job(&config, json!([input]), json!([]), json!([output]));
+    for command in ["check", "explain", "run"] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_dxt"));
+        child
+            .arg(command)
+            .arg(config.join("job.yml"))
+            .args([
+                "--input.sales.path=sales = 売上.csv",
+                "--output.result.path",
+                "result = 結果.csv",
+                "--threads",
+                "1",
+            ])
+            .current_dir(d.path());
+        if command == "check" {
+            child.arg("--scan");
+        }
+        let output = ok(child.output().unwrap());
+        if command == "check" {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("sales: 2 records scanned"));
+        }
+        if command == "explain" {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("output result"));
+        }
+        assert_eq!(
+            d.path().join("result = 結果.csv").exists(),
+            command == "run"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(d.path().join("result = 結果.csv")).unwrap(),
+        "value\nfirst\nsecond\n"
+    );
+    assert!(!config.join("result = 結果.csv").exists());
+}
+
+#[test]
+fn cli_paths_override_imported_defaults_and_select_each_dataset_by_id() {
+    let d = tempfile::tempdir().unwrap();
+    let definitions = d.path().join("defs");
+    fs::create_dir(&definitions).unwrap();
+    fs::write(d.path().join("actual.csv"), "value\nnew\n").unwrap();
+    fs::write(definitions.join("other.csv"), "value\nother\n").unwrap();
+    let input = json!([
+        csv("sales", "missing.csv", json!([{"name":"value"}])),
+        csv("other", "other.csv", json!([{"name":"value"}]))
+    ]);
+    let mut second_output = out("SELECT * FROM other", "other-out.csv");
+    // Input and output IDs have separate namespaces.
+    second_output["id"] = json!("sales");
+    write_job(
+        &definitions,
+        input,
+        json!([]),
+        json!([out("SELECT * FROM sales", "default.csv"), second_output]),
+    );
+    fs::write(d.path().join("job.yml"), "import: defs/job.yml\n").unwrap();
+    let input_flag = format!(
+        "--input.sales.path={}",
+        d.path().join("actual.csv").display()
+    );
+    let output_flag = format!(
+        "--output.result.path={}",
+        d.path().join("result.csv").display()
+    );
+    let other_output = format!(
+        "--output.sales.path={}",
+        d.path().join("other.csv").display()
+    );
+    ok(invoke(
+        d.path(),
+        "run",
+        &[&input_flag, &output_flag, &other_output],
+    ));
+    assert_eq!(
+        fs::read_to_string(d.path().join("result.csv")).unwrap(),
+        "value\nnew\n"
+    );
+    assert_eq!(
+        fs::read_to_string(d.path().join("other.csv")).unwrap(),
+        "value\nother\n"
+    );
+    assert!(!definitions.join("default.csv").exists());
+    assert!(!definitions.join("other-out.csv").exists());
+}
+
+#[test]
+fn cli_path_errors_are_configuration_errors_without_outputs() {
+    let d = tempfile::tempdir().unwrap();
+    fs::write(d.path().join("in.csv"), "value\nok\n").unwrap();
+    let input = csv("data", "in.csv", json!([{"name":"value"}]));
+    let output = out("SELECT * FROM data", "out.csv");
+    write_job(
+        d.path(),
+        json!([input.clone()]),
+        json!([]),
+        json!([output.clone()]),
+    );
+    for (args, message) in [
+        (vec!["--input.missing.path=x.csv"], "unknown input id"),
+        (vec!["--output.missing.path=x.csv"], "unknown output id"),
+        (vec!["--input.data.file=x.csv"], "unexpected argument"),
+        (vec!["--input.data.path"], "a value is required"),
+        (vec!["--input.data.path="], "a value is required"),
+        (vec!["--output.result.path="], "a value is required"),
+        (
+            vec!["--input.data.path=a.csv", "--input.data.path=b.csv"],
+            "cannot be used multiple times",
+        ),
+    ] {
+        let result = invoke(d.path(), "check", &args);
+        assert_eq!(result.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains(message),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    for section in ["input", "output"] {
+        let mut job = json!({"input": [input.clone()], "output": [output.clone()]});
+        job[section][0].as_object_mut().unwrap().remove("path");
+        fs::write(d.path().join("job.yml"), serde_json::to_vec(&job).unwrap()).unwrap();
+        let result = invoke(d.path(), "check", &[]);
+        let id = if section == "input" { "data" } else { "result" };
+        assert_eq!(result.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains(&format!("--{section}.{id}.path"))
+        );
+    }
+    assert!(!d.path().join("out.csv").exists());
+}
+
+#[test]
 fn csv_null_empty_quotes_and_partial_fields() {
     let d = tempfile::tempdir().unwrap();
     fs::write(

@@ -434,6 +434,63 @@ pub struct Job {
     pub hashes: BTreeMap<PathBuf, String>,
     pub expanded_hash: String,
 }
+#[derive(Default, Debug)]
+pub struct PathOverrides {
+    pub input: BTreeMap<String, PathBuf>,
+    pub output: BTreeMap<String, PathBuf>,
+}
+impl PathOverrides {
+    fn apply(&self, root: &mut Node) -> Result<()> {
+        for (section, paths) in [("input", &self.input), ("output", &self.output)] {
+            if paths.is_empty() {
+                continue;
+            }
+            let Kind::Mapping(map) = &mut root.kind else {
+                unreachable!("job root was validated");
+            };
+            let node = map.get_mut(section).unwrap();
+            let Kind::Sequence(datasets) = &mut node.kind else {
+                return Err(Error::config("expected array").context(&node.origin));
+            };
+            for (id, path) in paths {
+                let option = format!("--{section}.{id}.path");
+                if path.as_os_str().is_empty() {
+                    return Err(Error::config(format!("{option}: path must not be empty")));
+                }
+                let dataset = datasets
+                    .iter_mut()
+                    .find(|n| n.get("id").is_some_and(|n| n.value().as_str() == Some(id)))
+                    .ok_or_else(|| {
+                        Error::config(format!("{option}: unknown {section} id '{id}'"))
+                    })?;
+                let path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    std::env::current_dir()
+                        .map_err(|e| Error::config(e.to_string()).context(&option))?
+                        .join(path)
+                };
+                let value = serde_json::to_value(path)
+                    .map_err(|e| Error::config(e.to_string()).context(&option))?;
+                let Kind::Mapping(map) = &mut dataset.kind else {
+                    unreachable!("dataset has an id");
+                };
+                map.insert(
+                    "path".into(),
+                    Node {
+                        kind: Kind::Scalar(value),
+                        origin: Origin {
+                            file: "<command line>".into(),
+                            line: 1,
+                            column: 1,
+                        },
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+}
 pub fn identifier(name: &str) -> bool {
     let mut chars = name.bytes();
     matches!(chars.next(), Some(b'a'..=b'z'))
@@ -445,12 +502,21 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
     };
     seq.iter()
         .map(|n| {
+            let path = n.get("path").ok_or_else(|| {
+                let section = if output { "output" } else { "input" };
+                let id = n.get("id").map(Node::value).unwrap_or(Value::Null);
+                let id = id.as_str().unwrap_or("<id>");
+                Error::config(format!(
+                    "{section}.{id}.path is required in YAML or via --{section}.{id}.path"
+                ))
+                .context(&n.origin)
+            })?;
             let mut d: Dataset = n.decode()?;
             d.origin = Some(n.origin.clone());
             d.sql_origin = n.get("sql").map(|n| n.origin.clone());
-            let path = n
-                .get("path")
-                .ok_or_else(|| Error::config("path is required").context(&n.origin))?;
+            if d.path.as_os_str().is_empty() {
+                return Err(Error::config("path must not be empty").context(&path.origin));
+            }
             d.path = path.origin.file.parent().unwrap().join(&d.path);
             if let Some(Node {
                 kind: Kind::Sequence(fields),
@@ -497,8 +563,11 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
         .collect()
 }
 pub fn load(path: &Path) -> Result<Job> {
+    load_with_paths(path, &PathOverrides::default())
+}
+pub fn load_with_paths(path: &Path, paths: &PathOverrides) -> Result<Job> {
     let mut loader = Loader::default();
-    let root = loader.file(path)?;
+    let mut root = loader.file(path)?;
     fn validate_nulls(node: &Node, allow: bool) -> Result<()> {
         match &node.kind {
             Kind::Scalar(Value::Null) if !allow => {
@@ -534,6 +603,10 @@ pub fn load(path: &Path) -> Result<Job> {
         )
         .context(&root.origin));
     }
+    paths.apply(&mut root)?;
+    let Kind::Mapping(m) = &root.kind else {
+        unreachable!("job root was validated");
+    };
     let input = datasets(&m["input"], false)?;
     let output = datasets(&m["output"], true)?;
     let mut process: Vec<Process> = m
@@ -649,6 +722,33 @@ mod tests {
             fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
             assert_eq!(load(&path).unwrap_err().code, 2, "{value}");
         }
+    }
+
+    #[test]
+    fn path_overrides_are_included_in_the_expanded_hash() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("job.yml");
+        fs::write(&path, serde_json::to_vec(&minimal_job()).unwrap()).unwrap();
+        let original = load(&path).unwrap();
+        let mut paths = PathOverrides::default();
+        paths.input.insert("data".into(), "actual.csv".into());
+        let overridden = load_with_paths(&path, &paths).unwrap();
+        assert_eq!(original.hashes, overridden.hashes);
+        assert_ne!(original.expanded_hash, overridden.expanded_hash);
+        assert_eq!(
+            overridden.input[0].path,
+            std::env::current_dir().unwrap().join("actual.csv")
+        );
+        assert_eq!(overridden.output[0].path, original.output[0].path);
+        assert_eq!(
+            overridden.expanded_hash,
+            load_with_paths(&path, &paths).unwrap().expanded_hash
+        );
+        paths.input.insert("data".into(), "another.csv".into());
+        assert_ne!(
+            overridden.expanded_hash,
+            load_with_paths(&path, &paths).unwrap().expanded_hash
+        );
     }
 
     #[test]

@@ -11,6 +11,12 @@ cargo run -- run examples/basic/job.yml --threads 4 --memory-limit 512MiB
 
 サンプルの結果は `examples/basic/totals.csv` に出力されます。相対パスは、その値を記述した YAML ファイルがあるディレクトリから解決します。既存出力を置き換えるには出力定義に `mode: overwrite` を指定します。
 
+入力・出力の `path` は YAML では省略でき、`check`・`explain`・`run` の引数で `--input.<id>.path` / `--output.<id>.path` として指定できます。引数は YAML の値より優先し、引数の相対パスはコマンド実行時のカレントディレクトリから解決します。各ファイルのパスは YAML または引数のいずれかで必ず指定してください。存在しない ID、空のパス、同じ引数の重複指定は設定エラーです。`=` で値を結ぶ形式と、空白で区切る形式の両方を使えます。
+
+```sh
+dxt run job.yml --input.sales.path=sales.csv --output.totals.path=totals.csv
+```
+
 固定長・CSV の各組み合わせ、文字コード、全23型、読み戻し、異常系のサンプルと一括検証手順は [examples/README.md](examples/README.md) を参照してください。
 
 CSV・fixed・RDW の入力定義は全列の名前・型を指定します。CSV の未引用の空フィールドは NULL、引用した空フィールドは空文字です。`output.fields` の部分指定では SQL の列順を保ったまま書式を設定できます。fixed / RDW は全物理項目を定義し、隙間は名前のない FILLER で明示します。23種類の型、文字コード、ビット列、日時パターン、NULL 表現を共通のレイアウトで処理します。
