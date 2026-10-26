@@ -1,0 +1,28 @@
+# 全23型。幅は合計132バイト。bits は first_flag / last_flag の2列へ展開する。
+- {name: label, type: string, length: 4}
+- {name: amount, type: decimal, length: 7, precision: 7, scale: 2}
+- {name: active, type: boolean, length: 1, true_values: ['Y'], false_values: ['N']}
+- {name: business_date, type: date, length: 10}
+- {name: event_time, type: time, length: 15, unit: us}
+- {name: event_at, type: timestamp, length: 27, unit: us, timezone: UTC}
+- {name: payload, type: binary, length: 2}
+- name: flags
+  type: bits
+  length: 2
+  bit_order: msb0
+  bits: [{name: first_flag, bit: 0}, {name: last_flag, bit: 15}]
+- {name: signed_le, type: int-le, length: 2}
+- {name: signed_be, type: int-be, length: 2}
+- {name: unsigned_le, type: uint-le, length: 2}
+- {name: unsigned_be, type: uint-be, length: 2}
+- {name: ieee_le, type: float-le, length: 4}
+- {name: ieee_be, type: float-be, length: 8}
+- {name: ibm_le, type: hfloat-le, length: 8}
+- {name: ibm_be, type: hfloat-be, length: 16}
+- {name: trailing_sign, type: zoned, length: 3, zone: ebcdic, precision: 3}
+- {name: leading_sign, type: lzoned, length: 4, zone: ascii, precision: 3}
+- {name: separate_sign, type: tzoned, length: 4, zone: ebcdic, precision: 3}
+- {name: unsigned_zone, type: uzoned, length: 3, zone: ebcdic, precision: 3}
+- {name: signed_packed, type: packed, length: 2, precision: 3, scale: 1}
+- {name: unsigned_packed, type: upacked, length: 2, precision: 3, scale: 1}
+- {name: no_sign_packed, type: npacked, length: 2, precision: 3, scale: 1}

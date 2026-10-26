@@ -1,0 +1,15 @@
+input:
+  - id: records
+    format: csv
+    path: data/decimal.csv
+    encoding: utf-8
+    fields: [{name: amount, type: decimal, precision: 5, scale: 2}]
+output:
+  - id: result
+    sql: SELECT * FROM records
+    format: fixed
+    path: out/precision.dat
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: none}
+    fields: [{name: amount, type: packed, length: 2, precision: 3, scale: 1}]

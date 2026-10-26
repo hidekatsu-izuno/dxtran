@@ -1,0 +1,31 @@
+input:
+  - id: events
+    format: csv
+    path: data/events.csv
+    encoding: utf-8
+    fields:
+      - {name: business_date, type: date, datetime_pattern: yyMMdd, two_digit_year_start: 1970}
+      - {name: event_time, type: time, unit: ns, datetime_pattern: 'HHmmss.SSSSSSSSS'}
+      - {name: event_at, type: timestamp, unit: ms, timezone: Asia/Tokyo, datetime_pattern: "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"}
+      - {name: local_at, type: timestamp, unit: s, timezone: null, datetime_pattern: 'yyyyMMddHHmmss'}
+output:
+  - id: compact
+    sql: SELECT * FROM events
+    format: fixed
+    path: out/events.dat
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: crlf, record_length: 61}
+    fields:
+      - {name: business_date, type: date, length: 8, datetime_pattern: yyyyMMdd}
+      - {name: event_time, type: time, length: 16, unit: ns, datetime_pattern: 'HHmmss.SSSSSSSSS'}
+      - {name: event_at, type: timestamp, length: 23, unit: ms, timezone: Asia/Tokyo, datetime_pattern: 'yyyyMMddHHmmss.SSSZ'}
+      - {name: local_at, type: timestamp, length: 14, unit: s, timezone: null, datetime_pattern: 'yyyyMMddHHmmss'}
+  - id: utc
+    sql: SELECT * FROM events
+    format: csv
+    path: out/events_utc.csv
+    mode: overwrite
+    encoding: utf-8
+    fields:
+      - {name: event_at, timezone: UTC}

@@ -1,10 +1,10 @@
 # dxtran 設計仕様書
 
-状態: 初期設計案 / 仕様版: 0.15 / 作成日: 2026-10-22 / 更新日: 2026-10-25
+状態: 初期設計案 / 仕様版: 0.17 / 作成日: 2026-10-22 / 更新日: 2026-10-26
 
 ## 1. 目的と設計上の前提
 
-dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長ファイルを読み込み、Apache DataFusion の SQL で編集・変換し、CSV、固定長または RDW 付き可変長ファイルへ出力するバッチ処理ツールとする。複数の入力の結合、抽出、項目追加、型変換、集計、並べ替え、複数形式への出力を、1つの YAML ファイルで定義する。
+dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長、Parquet ファイルを読み込み、Apache DataFusion の SQL で編集・変換し、CSV、固定長、RDW 付き可変長または Parquet ファイルへ出力するバッチ処理ツールとする。複数の入力の結合、抽出、項目追加、型変換、集計、並べ替え、複数形式への出力を、1つの YAML ファイルで定義する。
 
 項目は YAML に直接定義する。定義の任意の枝は `import` で再利用し、利用側で上書きできる。`process` は WITH 句のように参照する中間データセットを定義し、最終的な編集・集計 SQL は `output` に直接指定できる。順序を明示しなければ、元ファイルのレコード順を維持する。
 
@@ -16,9 +16,9 @@ dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長フ
 
 | 分類 | 初期版の対応 |
 | --- | --- |
-| 入力 | CSV、固定長（`fixed`）、RDW 付き可変長（`rdw`） |
+| 入力 | CSV、固定長（`fixed`）、RDW 付き可変長（`rdw`）、Parquet（`parquet`） |
 | 編集 | DataFusion SQL による選択、フィルタ、式、結合、集計、ウィンドウ関数 |
-| 出力 | CSV、固定長、RDW 付き可変長。項目は YAML に直接定義 |
+| 出力 | CSV、固定長、RDW 付き可変長、Parquet。Parquet は SQL 結果スキーマ、他の形式は YAML の項目定義を使用 |
 | 定義の再利用 | 任意の枝への `import` と利用側の値による上書き |
 | 行順 | 元ファイル順を既定とし、SQL の ORDER BY で変更可能 |
 | 文字コード | encoding_rs が認識する全ラベル・別名。明示指定し、自動判定しない |
@@ -30,7 +30,7 @@ dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長フ
 | NULL 出力 | fixed は型別の既定値で補完する。文字・日時等は空白、数値は0、binary はゼロバイト、bits の NULL 子は false。rdw は明示した NULL 表現を使用可能 |
 | 実行 | 設定検証、SQL 計画の表示、ストリーム実行、実行結果の記録 |
 
-BDW、spanned record、複数レコード種別の自動選択、圧縮ファイル、リモートストレージ、任意コードの実行、分散実行は後続の拡張対象とする。copybook の取り込み・解析は対象に含めない。
+BDW、spanned record、複数レコード種別の自動選択、gzip / zstd / Parquet 内部の圧縮以外の圧縮ファイル、リモートストレージ、任意コードの実行、分散実行は後続の拡張対象とする。copybook の取り込み・解析は対象に含めない。
 
 ## 3. 全体構成
 
@@ -41,12 +41,12 @@ flowchart LR
     I --> V[構文・参照・型の検証]
     I --> L[共通レイアウト]
     V --> P[依存グラフ・SQL 計画]
-    L --> R[CSV / fixed / rdw Reader]
+    L --> R[CSV / fixed / rdw / parquet Reader]
     R --> A[Arrow RecordBatch]
     A --> D[DataFusion]
     P --> D
     D --> S[指定順または元ファイル順の確定]
-    S --> W[CSV / fixed / rdw Writer]
+    S --> W[CSV / fixed / rdw / parquet Writer]
     L --> W
     W --> T[tmp フォルダ内の出力用一時ファイル]
     T -->|rename / replace| O[最終ファイルへ公開]
@@ -64,8 +64,8 @@ process: []
 output: []
 ```
 
-- import 展開後の最上位はこの3つのキーとし、値はすべて配列。`input` と `output` はそれぞれ1件以上、`process` は0件以上とする。
-- 各 output は `sql` を必須とする。`process: []` でも、`output.sql` に編集・結合・集計を書ける。単純な形式変換も `SELECT * FROM sales` 等の SQL で入力を指定する。
+- import 展開後の最上位で使えるキーは `input`、`process`、`output` とし、指定する値はすべて配列。`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。
+- 各 output は `sql` を必須とする。`process` を省略した場合や `process: []` でも、`output.sql` に編集・結合・集計を書ける。単純な形式変換も `SELECT * FROM sales` 等の SQL で入力を指定する。
 - 項目定義は形式共通で input / output 直下の `fields` に置く。CSV の共通設定は `csv`、fixed のレコード設定は `fixed`、RDW の共通設定は `rdw` にまとめる。
 - 各定義に `id` を付ける。`input` と `process` の ID は同じ SQL テーブル名の名前空間を共有し、重複を禁止する。出力 ID は出力内で一意とする。
 - ID と公開列名は `[a-z][a-z0-9_]*` とし、SQL では予約語に当たる場合に二重引用符で囲む。
@@ -174,15 +174,16 @@ output:
 | キー | 必須 | 意味 |
 | --- | --- | --- |
 | `id` | 必須 | SQL から参照するテーブル名 |
-| `format` | 必須 | `csv`、`fixed`、`rdw` |
+| `format` | 必須 | `csv`、`fixed`、`rdw`、`parquet` |
 | `path` | 必須 | 入力ファイルのパス |
-| `encoding` | 必須 | encoding_rs が認識する文字コードラベル。6.5節参照 |
-| `fields` | 必須 | 全形式共通の項目定義の配列。CSV は列名・type・NULL 許容、fixed / rdw はバイト位置・幅等も指定 |
+| `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。省略時は非圧縮。6.7節参照 |
+| `encoding` | parquet 以外で必須 | encoding_rs が認識する文字コードラベル。6.5節参照。parquet では指定不可 |
+| `fields` | parquet 以外で必須 | CSV は列名・type・NULL 許容、fixed / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
 | `csv` | CSV で任意 | ヘッダー・区切り・引用符の設定 |
 | `fixed` | fixed で必須 | record_separator と、任意の record_length |
 | `rdw` | rdw で任意 | RDW の最大レコード長等の設定 |
 
-形式に合わないキーはエラーとする。存在しないファイル、読み取り不能、ディレクトリの指定もエラーとする。空ファイルは0行のテーブルになる。ただしヘッダー必須の CSV はヘッダーのない空ファイルをエラーとする。
+形式に合わないキーはエラーとする。存在しないファイル、読み取り不能、ディレクトリの指定もエラーとする。空ファイルは0行のテーブルになる。ただしヘッダー必須の CSV はヘッダーのない空ファイルをエラーとする。Parquet の0行ファイルはスキーマとフッターを持つ必要があり、0バイトのファイルはエラーとする。
 
 ### 6.2 CSV と NULL
 
@@ -270,6 +271,67 @@ input:
 
 対応集合と別名の意味は採用する encoding_rs の版とともに固定する。encoding_rs にない文字コードは受け付けない。例えば EBCDIC の文字列デコードはこの集合に含まれないが、数値の EBCDIC ゾーン表現は `zone: ebcdic` としてバイト処理できる。
 
+### 6.6 Parquet のネイティブスキーマ
+
+`format: parquet` はローカルの単一ファイルを読み書きする。入力は `id`・`format`・`path`、出力はこれらに加えて `sql` を指定する。`encoding`・`fields`・`csv`・`fixed`・`rdw` は指定しない。
+
+入力はフッターから列名・列順・論理型・NULL許容を取得する。CSVのような値に基づく型推論は行わない。公開列名には4節の識別子規則を適用し、重複・不正な名前は設定エラーとする。文字列、整数、浮動小数点、Decimal、真偽値、日付・時刻・タイムスタンプ、バイナリ、リスト・構造体などをArrowとして保持する。CSV・固定長・RDWへ出力する際は、出力形式で扱える型・幅へ必要に応じてSQLでCASTや展開を行う。
+
+出力の列名・列順・型・NULL許容はSQL結果から決め、Parquetに保存する。文字コード変換や文字列経由の数値変換は行わない。Decimalの精度・スケール、タイムスタンプの単位・タイムゾーン等はArrowスキーマのメタデータも保存して読み戻す。Parquetライブラリが表現できないSQL結果型は、出力作成前に設定エラーとする。入力ファイル固有の任意のキーバリューメタデータを複製する機能ではない。
+
+```yaml
+input:
+  - {id: data, format: parquet, path: input.parquet}
+output:
+  - id: result
+    format: parquet
+    path: output.parquet
+    sql: SELECT * FROM data
+    parquet: {compression: zstd, row_group_size: 8192}
+```
+
+`parquet` ブロックは出力専用で、省略できる。入力はファイルに記録された圧縮方式を使用する。
+
+| 出力設定 | 既定 | 意味 |
+| --- | --- | --- |
+| `compression` | `snappy` | `uncompressed` / `snappy` / `zstd` / `gzip` / `brotli` / `lz4_raw` |
+| `row_group_size` | `8192` | 1行グループの最大行数。正の整数 |
+
+読込は行グループの順、各グループ内の行順で行い、元レコード番号をファイル全体で連続させる。1入力につき1つの順序付きストリームとしてSQLへ渡す。射影で使わない列も、読み込んだ範囲ではデコードする。`check` / `explain` はフッターとスキーマを検査し、`check --scan` は全データページを読み込む。LIMITで読まれなかった範囲の検査は保証しない。
+
+Parquetの読込バッチは最大8,192行とし、フッターの平均非圧縮サイズを使って16 MiBを目安に行数を減らす。出力は行数上限と推定エンコードサイズ16 MiBを使って行グループを区切り、ライブラリのバッファ使用量もバッチ間で確認してフラッシュする。これらはページ展開後の厳密なメモリ上限ではない。Parquetの巨大な1値・ページにはCSV / fixed / rdwの16 MiBレコード上限を適用せず、ライブラリのバッファをDataFusionのメモリプール管理外で使用する。ファイル全体をcollectしてから出力する方式は使用しない。
+
+0行でもスキーマとフッターを持つ有効なファイルを出力する。フッターの書き込み・flush・fsyncが成功してから、12節の共通の原子的公開を行う。破損した入力は入力エラー、エンコード・書き込み失敗は出力エラーとし、既存出力を保護する。
+
+### 6.7 gzip / zstd によるファイル全体の圧縮
+
+CSV・fixed・rdw の入力・出力直下で `compression: gzip` または `compression: zstd` を指定できる。省略またはNULLは非圧縮。拡張子での自動判定・圧縮方式の切り替えは行わない。不明な値は設定エラーとする。Parquetのファイル全体をこのキーで圧縮することはできず、Parquet内部の圧縮には出力の `parquet.compression` を使う。
+
+```yaml
+input:
+  - id: data
+    format: csv
+    path: input.csv.gz
+    encoding: utf-8
+    compression: gzip
+    fields: [{name: value}]
+output:
+  - id: result
+    format: csv
+    path: output.csv.zst
+    encoding: utf-8
+    compression: zstd
+    sql: SELECT * FROM data
+```
+
+入力は圧縮ストリームを展開してから、CSVの文字コード変換またはfixed / rdwのフレーミング・項目デコードへ渡す。出力は文字コード変換・レコード組み立て後のバイト列を圧縮する。全件をメモリや展開用一時ファイルに保持せず、ストリームとして処理する。既存のレコード長・バッチサイズの検証は展開後のデータに適用する。fixed / rdw のエラーのバイト位置も展開後の位置である。
+
+gzipは全メンバー、zstdは全連結フレームを読み込む。メンバー／フレームの境界でCSVの引用状態、文字コード変換状態、レコード番号をリセットしない。gzipのCRCとサイズ、zstdのチェックサムが存在する場合はその値を検査し、途中切断、圧縮方式の不一致、不正な後続データを入力エラーにする。圧縮指定時の0バイトファイルは不正であり、空データも有効なgzipメンバー／zstdフレームで表す。SQLのLIMITなどで読まれなかった範囲は検査されないため、全体の検証には `check --scan` を使用する。
+
+圧縮された固定長入力には、圧縮ファイル上のバイト位置による範囲分割を適用せず、先頭から逐次展開する。固定長出力の並列エンコードは引き続き利用し、順番に単一の圧縮器へ渡す。出力圧縮のCPU処理も変換用セマフォで制限する。圧縮器へは64 KiB単位でバイト列を渡し、バッチやスレッド数による圧縮結果の差を避ける。gzip出力は時刻とファイル名を含めず、zstd出力にはチェックサムを付ける。
+
+出力は文字コードエンコーダー、圧縮器、ファイルバッファの順で終端処理し、圧縮フッター／最終フレームとデータの同期が完了してから12節の共通公開を行う。0行でも有効な圧縮ファイルを生成する。圧縮・終端処理・書き込み失敗は出力エラーとし、既存ファイルを保護する。
+
 ## 7. 項目定義と統合した type
 
 ### 7.1 fields と固定幅の定義
@@ -285,7 +347,7 @@ fields:
   - { name: status, offset: 15, length: 1 }
 ```
 
-項目定義は input / output 直下の fields に置く。入力は全項目を定義し、出力は fixed / rdw で全物理項目、CSV では必要な項目の出力設定だけを定義する。CSV 出力の部分指定と SQL の列順の扱いは11.2節に従う。
+項目定義は input / output 直下の fields に置く。Parquet は fields を使わず、6.6節のネイティブスキーマを使用する。他の入力は全項目を定義し、出力は fixed / rdw で全物理項目、CSV では必要な項目の出力設定だけを定義する。CSV 出力の部分指定と SQL の列順の扱いは11.2節に従う。
 
 入力・固定幅項目の `type` の既定は `string`。`offset` の省略時は先頭項目を0、以降を直前項目の末尾として配置する。`fixed.record_length` は省略時に全項目の最大終端から導出する。input.fields の配列順を列の公開順とし、bits はその位置で子ビットの配列順に複数列へ展開する。fixed / rdw の物理配置は解決した offset とバイト長で決める。
 
@@ -344,8 +406,8 @@ CSV の output.fields では、type・precision / scale・unit / timezone・null
 | `uint-be` | 符号なし整数、ビッグエンディアン | 1〜8バイト |
 | `float-le` | IEEE 754 binary32 / binary64、リトルエンディアン | 4 / 8バイト |
 | `float-be` | IEEE 754 binary32 / binary64、ビッグエンディアン | 4 / 8バイト |
-| `hfp-le` | IBM HFP、リトルエンディアン | 4 / 8バイト |
-| `hfp-be` | IBM HFP、ビッグエンディアン | 4 / 8 / 16バイト |
+| `hfloat-le` | IBM HFP、リトルエンディアン | 4 / 8バイト |
+| `hfloat-be` | IBM HFP、ビッグエンディアン | 4 / 8 / 16バイト |
 | `zoned` | 末尾の数字バイトに符号を持つゾーン10進数 | length 桁 |
 | `lzoned` | 先頭に1バイトの分離符号を持つゾーン10進数 | length - 1 桁 |
 | `tzoned` | 末尾に1バイトの分離符号を持つゾーン10進数 | length - 1 桁 |
@@ -567,9 +629,9 @@ bits 配列は1件以上とし、範囲外・整数でないビット番号、�
 
 整数は指定した長さ・バイト順で読み、符号ありは2の補数で符号拡張する。書き込み時は物理幅の範囲を検証し、あふれた上位バイトを切り捨てない。IEEE は4バイトを binary32、8バイトを binary64 とし、負のゼロ、NaN、正負 Infinity も扱う。
 
-HFP の4 / 8バイトは符号1ビット、指数部7ビット、仮数24 / 56ビットの IBM hexadecimal floating point とする。値は `(-1)^sign × fraction × 16^(characteristic - 64)` で、fraction は小数点直後の仮数として扱う。`hfp-le` は4 / 8バイト全体を反転した表現と定義する。
+HFP の4 / 8バイトは符号1ビット、指数部7ビット、仮数24 / 56ビットの IBM hexadecimal floating point とする。値は `(-1)^sign × fraction × 16^(characteristic - 64)` で、fraction は小数点直後の仮数として扱う。`hfloat-le` は4 / 8バイト全体を反転した表現と定義する。
 
-`hfp-be` の16バイトは IBM extended HFP の上位・下位8バイトからなる形式とし、単純な IEEE binary128 や連続した120ビット仮数とは解釈しない。上位の符号・指数と上下の計112ビットの仮数を使い、下位語の符号・指数を別の浮動小数点数として加算しない。入出力は IBM の extended 形式の規則で正規化する。[IBM: z/Architecture Principles of Operation, HFP data formats](https://www.ibm.com/docs/en/module_1678991624569/pdf/SA22-7832-14.pdf?cp=HW11W)
+`hfloat-be` の16バイトは IBM extended HFP の上位・下位8バイトからなる形式とし、単純な IEEE binary128 や連続した120ビット仮数とは解釈しない。上位の符号・指数と上下の計112ビットの仮数を使い、下位語の符号・指数を別の浮動小数点数として加算しない。入出力は IBM の extended 形式の規則で正規化する。[IBM: z/Architecture Principles of Operation, HFP data formats](https://www.ibm.com/docs/en/module_1678991624569/pdf/SA22-7832-14.pdf?cp=HW11W)
 
 SQL 内では HFP を Float64 として扱うため、8 / 16バイト HFP は Float64 化の際に精度を失い得る。浮動小数点の形式変換は最近接・同距離なら偶数へ丸める。HFP の下位ビットや非正規化した元表現の完全保存は保証しない。HFP への NaN / Infinity、有限値の出力先範囲外、0へのアンダーフローはエラーとする。10進数・整数の変換にはこの近似規則を適用しない。
 
@@ -601,7 +663,7 @@ CSV の NULL は6.2節に固定する。以下の `null_if` / `null_if_pattern` 
 | `string` / `boolean` / `date` / `time` / `timestamp` | `pad_char` を encoding でエンコードし、項目幅全体を埋める。既定は半角 SPACE（U+0020）で、wstring 相当では U+3000 等も指定可能 |
 | `decimal` | 数値0を scale に従って文字化し、通常と同じ右寄せ・pad_char で幅を埋める。例えば scale: 2 は `0.00` |
 | `int-le` / `int-be` / `uint-le` / `uint-be` | 整数0。n バイトすべて `00` |
-| `float-le` / `float-be` / `hfp-le` / `hfp-be` | 正の0。対応する4 / 8 / 16バイトすべて `00`。各型で許される幅は7.3節に従う |
+| `float-le` / `float-be` / `hfloat-le` / `hfloat-be` | 正の0。対応する4 / 8 / 16バイトすべて `00`。各型で許される幅は7.3節に従う |
 | `binary` | n バイトすべて `00` のバイト列 |
 | `bits` | NULL の子だけを false（0）に補完し、非 NULL の子の値を保持する。未定義ビットも0とし、全子列が NULL なら n バイトすべて `00` |
 | `zoned` | 数値0を正符号付きでエンコードする。ebcdic は先頭 n−1 バイトが `F0`、末尾が `C0`。ascii は全バイト `30` |
@@ -792,7 +854,7 @@ fields:
 | `uint-le` / `uint-be` | UInt64。1〜8バイトをゼロ拡張 |
 | `float-le` / `float-be` の4バイト | Float32 |
 | `float-le` / `float-be` の8バイト | Float64 |
-| `hfp-le` / `hfp-be` | Float64。8 / 16バイト HFP の精度の扱いは7.7節 |
+| `hfloat-le` / `hfloat-be` | Float64。8 / 16バイト HFP の精度の扱いは7.7節 |
 | `boolean` | Boolean |
 | `bits` | 子定義ごとの Boolean 列。親の領域自体は SQL 列にしない |
 | `date` | Date32 |
@@ -833,7 +895,7 @@ NULL は各 Arrow 型の NULL 状態として扱い、利用者向けの NULL �
 | `id` | 必須 | 中間データセットを参照する名前 |
 | `sql` | 必須 | 中間データセットを定義する1つの SELECT 系クエリ |
 
-`process` は、出力から WITH 句の共通テーブル式を参照するように使う名前付きの中間データセットとする。入力または他の中間データセットを参照でき、書き込み先や出力形式は持たない。中間化する必要のない編集・結合・集計は `output.sql` に記述する。
+`process` は、出力から WITH 句の共通テーブル式を参照するように使う名前付きの中間データセットとする。入力または他の中間データセットを参照でき、書き込み先や出力形式は持たない。中間化する必要のない編集・結合・集計は `output.sql` に記述し、`process` 自体を省略できる。
 
 例えば全体例の出力は、次のような SQL と同じ関係を計算する。WITH 句への展開は意味を示すものであり、実装では SQL の名前解決を保持した論理ビューとして扱う。
 
@@ -864,14 +926,16 @@ INNER JOIN customers AS c ON s.customer_id = c.customer_id
 | --- | --- | --- |
 | `id` | 必須 | ログとエラーで使う出力 ID |
 | `sql` | 必須 | 出力するデータを定義する1つの SELECT 系クエリ |
-| `format` / `path` / `encoding` | 必須 | `csv` / `fixed` / `rdw`、ファイル名、6.5節の文字コード |
+| `format` / `path` | 必須 | `csv` / `fixed` / `rdw` / `parquet`、ファイル名 |
+| `encoding` | parquet 以外で必須 | 6.5節の文字コード。parquet では指定不可 |
+| `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。Parquet は `parquet.compression` を使用 |
 | `mode` | 任意 | `error_if_exists`（既定）または `overwrite` |
-| `fields` | fixed / rdw で必須、CSV で任意 | 全形式共通の項目定義の配列。CSV は name で結果列を参照し、必要な項目だけ出力設定を指定可能 |
+| `fields` | fixed / rdw で必須、CSV で任意、parquet で指定不可 | 全形式共通の項目定義の配列。CSV は name で結果列を参照し、必要な項目だけ出力設定を指定可能 |
 | `csv` | CSV で任意 | CSV 共通設定。区切り・引用符・ヘッダー・line_ending と、quote_style の共通既定値 |
 | `fixed` | fixed で必須 | record_separator と、任意の record_length。入力と同じ設定 |
 | `rdw` | rdw で任意 | 入力と同じ RDW の上限設定 |
 
-データの参照、列選択・列順、別名、式、型変換、WHERE、JOIN、集計、ORDER BY、LIMIT / OFFSET 等、SQL で指定できる処理はすべて `output.sql` に書く。YAML の出力設定は SQL と出力 ID、ファイル形式・保存先・文字コード・格納レイアウト等の書き出し設定とする。`output.sql` の構文、参照解決、型の規則は `process.sql` と共通とし、`process: []` のまま出力 SQL だけで処理を完結できる。
+データの参照、列選択・列順、別名、式、型変換、WHERE、JOIN、集計、ORDER BY、LIMIT / OFFSET 等、SQL で指定できる処理はすべて `output.sql` に書く。YAML の出力設定は SQL と出力 ID、ファイル形式・保存先・文字コード・格納レイアウト等の書き出し設定とする。`output.sql` の構文、参照解決、型の規則は `process.sql` と共通とし、`process` を省略するか `process: []` として出力 SQL だけで処理を完結できる。
 
 ```yaml
 process: []
@@ -889,6 +953,8 @@ output:
 この例では抽出した売上を元ファイルと同じ順に出力する。実際のジョブには `input` も定義する。
 
 ### 11.2 列とファイル形式
+
+Parquetは6.6節のSQL結果スキーマで出力し、物理項目定義やCSV書式設定を適用しない。
 
 CSV の区切り文字・引用符・ヘッダーの既定オプションは入力と共通とし、`line_ending` は `lf` を既定とする。NULL は引用符なしの空フィールド、長さ0の文字列は必ず `""` として出力する。非 NULL 値は fields の項目設定と csv の共通設定から決めた quote_style に従ってクォートし、クォート文字は二重化する。`null_value` は設けず、どのクォート設定でも NULL と空文字を区別する。
 
@@ -986,7 +1052,7 @@ CSV は SELECT リストの列順で書き出し、`SELECT *` は参照元の公
 
 import 展開後の `input` 配列の記載順に、1始まりの元データセット番号 `dataset_no` を割り当てる。同じ定義を import して ID を変えた入力や、同じファイルを指す別の入力にも、それぞれの配列位置に応じた番号を付ける。番号は設定検証時に確定し、実行開始順・完了順・ID の辞書順・物理的なパーティション番号に依存させない。YAML に利用者が番号を指定するキーは追加しない。
 
-Reader は、CSV のヘッダーを除いた論理レコード、または fixed / rdw の各レコードに、1始まりの元レコード番号 `record_no` を付ける。埋め込み改行を含む CSV も1レコードとして数える。番号は各入力ファイル全体で連続させ、バッチや読み込みパーティションの境界でリセットしない。
+Reader は、CSV のヘッダーを除いた論理レコード、fixed / rdw の各レコード、または Parquet の各行に、1始まりの元レコード番号 `record_no` を付ける。埋め込み改行を含む CSV も1レコードとして数える。番号は各入力ファイル全体で連続させ、バッチや読み込みパーティションの境界でリセットしない。
 
 各行の出所を `(dataset_no, record_no)` の組で識別する。この組を利用者の列とは別に保持し、WHERE で除外した後も元番号を付け直さない。中間データセット、サブクエリ、ローカル CTE は参照元の出所と順序キーを引き継ぐ。
 
@@ -1073,7 +1139,7 @@ tmp フォルダと各出力先は、同一ファイルシステム上で rename
 - CPU を使う処理の並列度は14節の `--threads` に従う。ランタイムのワーカー数と DataFusion の実行並列度に反映し、Reader / Writer の変換処理にも同じ設定で並列度を制御する。
 - Reader はデータセット番号と元レコード番号を行単位で保持し、物理計画の出力順序を正しく宣言する。ソート・並列結合・集計・UNION ALL を経た場合も順序キーを引き継ぐ。既定の元ファイル順を復元するためにソートと spill が必要になる場合がある。
 - フィルタの pushdown は初期版では対応せず、DataFusion 側で評価する。射影で不要な列の配列構築を省略できても、実際に読んだレコードの全項目は検証する。
-- バッチの目安は8,192行、アダプターのバッチ生成バッファは16 MiB とし、どちらかに達したら返す。16 MiB を超える1レコードは初期版ではエラーとする。
+- CSV / fixed / rdw のバッチの目安は8,192行、アダプターのバッチ生成バッファは16 MiB とし、どちらかに達したら返す。16 MiB を超える1レコードは初期版ではエラーとする。
 - 有界バッファとバックプレッシャーを使い、同期ファイル I/O や重いデコードは非同期ランタイムを長時間占有しない場所で実行する。
 - DataFusion 用のメモリプールと spill 用ディレクトリを構成する。spill は12.2節の実行専用作業ディレクトリ内に置き、出力用の一時ファイルと同じ tmp フォルダを使う。CLI のメモリ上限の既定値は512 MiB。これは DataFusion 管理下の上限であり、プロセス全体の RSS 上限を意味しない。
 - ソート・結合・集計での spill 可否は採用バージョンと演算に依存する。メモリ・ディスク不足は明示的に失敗させ、ストリーム出力だけで全クエリが定数メモリになるとは仮定しない。[DataFusion: Configuration Settings](https://datafusion.apache.org/user-guide/configs.html)
@@ -1110,6 +1176,7 @@ dxt run job.yml --memory-limit 1GiB --temp-dir ./tmp --threads 4
 | --- | --- |
 | YAML / import | 記述元ファイル、行・列、設定キー、import の参照経路 |
 | CSV | ファイル、論理レコード番号、可能なら物理行範囲、列名 |
+| Parquet | ファイル、読込中のバッチの先頭レコード番号、ライブラリから得られる原因 |
 | fixed / rdw | ファイル、1始まりのレコード番号、列名、本体内の0始まりのバイト位置と幅。RDW エラーはヘッダー位置・宣言長も記録 |
 | SQL | 中間データセットまたは出力の ID、SQL 内の位置、参照・型・順序伝搬等の原因 |
 | 出力値 | 出力 ID、出力レコード番号、列名、期待する型・幅 |
@@ -1137,7 +1204,7 @@ src/
   source/                引用状態を保持する CSV Reader、fixed / rdw Reader、TableProvider
   planner/               SQL からの依存抽出、中間データセットと出力の計画
   planner/order.rs       順序キーの伝搬、ソートと順序付きマージの計画
-  sink/                  CSV / fixed / rdw Writer、一時ファイル、公開
+  sink/                  CSV / fixed / rdw / parquet Writer、一時ファイル、公開
   runtime/               実行制御、リソース設定、メトリクス
   error.rs               型付きエラーと位置情報
 tests/
@@ -1179,6 +1246,10 @@ tests/
 19. pad_char は U+0020 / U+3000 等を指定でき、UTF-8 / UTF-16LE / BE / Shift_JIS で文字の途中を切らず幅埋め・trim できる。1文字制約、文字コードで表せない文字、幅を埋めきれない場合、rdw の NULL 表現と組み合わせた照合も検証する。
 20. datetime_pattern は CSV / fixed / rdw の入出力で Unicode の記号を一貫して解釈する。MM と mm、y と Y の区別、T と引用符のリテラル、小数秒の桁数、UTC オフセット、yy の復元範囲、曖昧な数字の配置、不正パターン、往復時の精度・バイト幅を検証する。
 
+21. ParquetとCSV / fixed / rdwの相互変換、スキーマ・NULL・空文字・Decimal・日時・バイナリ・リスト・構造体の保持、行グループをまたぐ元順と同順位ソート、6圧縮方式、0行ファイル、破損フッター・データページ、失敗時の既存出力の保護を検証する。
+
+22. CSV / fixed / rdwのgzip・zstd入出力、連結メンバー／フレームをまたぐ文字コードと引用状態、圧縮前後の型・NULL・行順の保持、チェックサム不一致・途中切断・方式不一致、空データ、展開後のエラー位置、並列度によらない圧縮結果、失敗時の既存出力保護を検証する。
+
 型変換の基本的な期待値には次を含める。表の数値は小数桁0の場合とし、バイト列は16進数で表す。
 
 | 定義 | バイト列 | 計算用の値 |
@@ -1188,8 +1259,8 @@ tests/
 | `uint-be`, length 2 | `01 02` | 258 |
 | `float-be`, length 4 | `3F 80 00 00` | 1.0 |
 | `float-le`, length 4 | `00 00 80 3F` | 1.0 |
-| `hfp-be`, length 4 | `41 10 00 00` | 1.0 |
-| `hfp-le`, length 4 | `00 00 10 41` | 1.0 |
+| `hfloat-be`, length 4 | `41 10 00 00` | 1.0 |
+| `hfloat-le`, length 4 | `00 00 10 41` | 1.0 |
 | `packed`, length 2, precision 3 | `12 3C` / `12 3D` | +123 / -123 |
 | `upacked`, length 2, precision 3 | `12 3F` | 123 |
 | `npacked`, length 2, precision 3 | `01 23` | 123 |
@@ -1198,4 +1269,4 @@ tests/
 
 ## 17. 将来の拡張
 
-encoding_rs の範囲外の文字コード、BDW / spanned record、複数レコード種別の自動選択、Parquet 等の形式、明示的な中間結果保存、オブジェクトストレージを、既存の入力・レイアウト・出力インターフェースへ追加する。複数出力の一括公開や不正行の隔離出力は、成功・失敗の意味が変わるため個別に仕様を定義する。
+encoding_rs の範囲外の文字コード、BDW / spanned record、複数レコード種別の自動選択、その他のファイル形式、明示的な中間結果保存、オブジェクトストレージを、既存の入力・レイアウト・出力インターフェースへ追加する。複数出力の一括公開や不正行の隔離出力は、成功・失敗の意味が変わるため個別に仕様を定義する。

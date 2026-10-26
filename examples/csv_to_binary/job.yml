@@ -1,0 +1,56 @@
+input:
+  - id: records
+    format: csv
+    path: data/records.csv
+    encoding: utf-8
+    fields:
+      - {name: label}
+      - {name: amount, type: decimal, precision: 7, scale: 2}
+      - {name: active, type: boolean}
+      - {name: business_date, type: date}
+      - {name: event_time, type: time, unit: us}
+      - {name: event_at, type: timestamp, unit: us, timezone: UTC}
+      - {name: payload, type: binary}
+      - {name: first_flag, type: boolean}
+      - {name: last_flag, type: boolean}
+      - {name: signed_le, type: decimal, precision: 5}
+      - {name: signed_be, type: decimal, precision: 5}
+      - {name: unsigned_le, type: decimal, precision: 5}
+      - {name: unsigned_be, type: decimal, precision: 5}
+      - {name: ieee_le, type: decimal, precision: 5, scale: 2}
+      - {name: ieee_be, type: decimal, precision: 5, scale: 2}
+      - {name: ibm_le, type: decimal, precision: 5, scale: 2}
+      - {name: ibm_be, type: decimal, precision: 5, scale: 2}
+      - {name: trailing_sign, type: decimal, precision: 3}
+      - {name: leading_sign, type: decimal, precision: 3}
+      - {name: separate_sign, type: decimal, precision: 3}
+      - {name: unsigned_zone, type: decimal, precision: 3}
+      - {name: signed_packed, type: decimal, precision: 3, scale: 1}
+      - {name: unsigned_packed, type: decimal, precision: 3, scale: 1}
+      - {name: no_sign_packed, type: decimal, precision: 3, scale: 1}
+process:
+  - id: typed
+    # CSV は整数・浮動小数点の物理型を持たないので SQL で変換する。
+    sql: |
+      SELECT label, amount, active, business_date, event_time, event_at, payload,
+             first_flag, last_flag,
+             CAST(signed_le AS SMALLINT) AS signed_le,
+             CAST(signed_be AS SMALLINT) AS signed_be,
+             CAST(unsigned_le AS INT UNSIGNED) AS unsigned_le,
+             CAST(unsigned_be AS INT UNSIGNED) AS unsigned_be,
+             CAST(ieee_le AS REAL) AS ieee_le,
+             CAST(ieee_be AS DOUBLE) AS ieee_be,
+             CAST(ibm_le AS DOUBLE) AS ibm_le,
+             CAST(ibm_be AS DOUBLE) AS ibm_be,
+             trailing_sign, leading_sign, separate_sign, unsigned_zone,
+             signed_packed, unsigned_packed, no_sign_packed
+      FROM records
+output:
+  - id: binary
+    sql: SELECT * FROM typed
+    format: fixed
+    path: out/records.bin
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: none}
+    fields: {import: ../layouts/all_types.yml}

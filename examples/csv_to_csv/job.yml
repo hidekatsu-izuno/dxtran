@@ -1,0 +1,31 @@
+# NULL（未引用の空欄）と空文字（""）を区別したまま変換する。
+input:
+  - id: records
+    format: csv
+    path: data/records.csv
+    encoding: utf-8
+    fields:
+      - {name: id}
+      - {name: memo, nullable: true}
+      - {name: amount, type: decimal, precision: 7, scale: 2}
+      - {name: active, type: boolean, true_values: ['Y'], false_values: ['N']}
+      - {name: business_date, type: date, datetime_pattern: yyyyMMdd}
+      - {name: payload, type: binary, nullable: true}
+output:
+  - id: canonical
+    sql: SELECT * FROM records
+    format: csv
+    path: out/canonical.csv
+    mode: overwrite
+    encoding: utf-8
+  - id: tab_separated
+    sql: SELECT id, memo, amount, payload FROM records
+    format: csv
+    path: out/records.tsv
+    mode: overwrite
+    encoding: utf-8
+    csv: {header: false, delimiter: "\t", line_ending: crlf}
+    # fields の指定順によらず、SQL の列順で出力する。
+    fields:
+      - {name: payload, binary_encoding: base64}
+      - {name: id, quote_style: always}

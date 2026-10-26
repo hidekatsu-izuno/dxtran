@@ -1,0 +1,3 @@
+label,amount,active,business_date,event_time,event_at,payload,first_flag,last_flag,signed_le,signed_be,unsigned_le,unsigned_be,ieee_le,ieee_be,ibm_le,ibm_be,trailing_sign,leading_sign,separate_sign,unsigned_zone,signed_packed,unsigned_packed,no_sign_packed
+AB,-12.30,true,2026-10-26,12:34:56.123456,2026-10-26T12:34:56.123456Z,00ff,true,true,-2,-2,258,258,1.5,-2.25,1,-1,-123,-123,-123,123,-12.3,12.3,12.3
+Z,0.00,false,2024-02-29,00:00:00.000000,2024-02-29T00:00:00.000000Z,0a0d,false,false,0,0,0,0,0,0,0,0,0,0,0,0,0.0,0.0,0.0

@@ -1,0 +1,4 @@
+"customer_id",customer_name,region,amount
+"0002",Bob,west,123.45
+"0001",Alice,east,5.00
+"0002",Bob,west,1.00

@@ -1,0 +1,18 @@
+input:
+  - id: events
+    format: fixed
+    path: out/events.dat
+    encoding: utf-8
+    fixed: {record_separator: crlf, record_length: 61}
+    fields:
+      - {name: business_date, type: date, length: 8, datetime_pattern: yyyyMMdd}
+      - {name: event_time, type: time, length: 16, unit: ns, datetime_pattern: 'HHmmss.SSSSSSSSS'}
+      - {name: event_at, type: timestamp, length: 23, unit: ms, timezone: Asia/Tokyo, datetime_pattern: 'yyyyMMddHHmmss.SSSZ'}
+      - {name: local_at, type: timestamp, length: 14, unit: s, timezone: null, datetime_pattern: 'yyyyMMddHHmmss'}
+output:
+  - id: readback
+    sql: SELECT * FROM events
+    format: csv
+    path: out/readback.csv
+    mode: overwrite
+    encoding: utf-8

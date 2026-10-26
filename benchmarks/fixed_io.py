@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--size-mib", type=int, default=256)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
+    parser.add_argument("--threads", type=int, nargs="+", default=[1, 4], help="dxt thread counts to compare")
     parser.add_argument("--cache", choices=["warm", "cold-advisory"], default="warm")
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--result", type=Path, default=ROOT / "benchmarks/results/fixed-io.json")
@@ -47,6 +48,8 @@ def main():
     args = parser.parse_args()
     if args.size_mib < 1 or args.repeats < 1 or args.warmups < 0:
         parser.error("size/repeats must be positive and warmups nonnegative")
+    if any(n < 1 for n in args.threads) or len(set(args.threads)) != len(args.threads):
+        parser.error("threads must be distinct positive integers")
     release = ROOT / "target/release"
     baseline = release / "fixed-copy-baseline"
     if not args.skip_build:
@@ -100,7 +103,7 @@ def main():
             cases[f"codecs_{layout}"] = [str(binaries["codec"]), str(job), str(stage)]
             if "codec" in comparisons:
                 cases[f"before_codecs_{layout}"] = [str(comparisons["codec"]), str(job), str(stage)]
-            for threads in (1, 4):
+            for threads in args.threads:
                 cases[f"dxt_{layout}_threads_{threads}"] = [str(binaries["dxt"]), "run", str(job), "--threads", str(threads), "--memory-limit", "512MiB", "--temp-dir", str(stages)]
                 if "dxt" in comparisons:
                     cases[f"before_dxt_{layout}_threads_{threads}"] = [str(comparisons["dxt"]), *cases[f"dxt_{layout}_threads_{threads}"][1:]]
@@ -115,7 +118,7 @@ def main():
                                   "filesystem": subprocess.check_output(["stat", "-f", "-c", "%T", str(work)], text=True).strip(),
                                   "cpu_max": Path("/sys/fs/cgroup/cpu.max").read_text().strip(), "memory_max": Path("/sys/fs/cgroup/memory.max").read_text().strip()},
                    "settings": {"size_bytes": target_bytes, "record_bytes": RECORD_SIZE, "rows": target_bytes // RECORD_SIZE, "cache": args.cache,
-                                "repeats": args.repeats, "warmups": args.warmups, "build_profile": "release", "fsync": True,
+                                "repeats": args.repeats, "warmups": args.warmups, "threads": args.threads, "build_profile": "release", "fsync": True,
                                 "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "input_sha256": expected, "order_seed": 20261025},
                    "plans": plans, "runs": [], "summary": {}}
         rng = random.Random(20261025)

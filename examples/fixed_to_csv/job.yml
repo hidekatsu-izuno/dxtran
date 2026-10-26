@@ -1,0 +1,26 @@
+input:
+  - id: sales
+    format: fixed
+    path: data/sales.dat
+    encoding: cp932
+    fixed: {record_separator: crlf, record_length: 23}
+    fields:
+      - {name: id, length: 4}
+      - {name: customer, length: 8}
+      - {name: amount, length: 7, type: zoned, zone: ascii, precision: 7, scale: 2}
+      - {name: status, length: 1}
+      - {name: note, length: 3, nullable: true, null_if_pattern: 'N/A|-+'}
+output:
+  - id: utf8
+    sql: SELECT * FROM sales
+    format: csv
+    path: out/sales.csv
+    mode: overwrite
+    encoding: utf-8
+  - id: cp932
+    sql: SELECT id, customer, amount FROM sales
+    format: csv
+    path: out/sales_cp932.tsv
+    mode: overwrite
+    encoding: cp932
+    csv: {header: false, delimiter: "\t", line_ending: crlf, quote_style: always}

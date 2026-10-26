@@ -1,0 +1,7 @@
+format: fixed
+encoding: cp932
+fixed: {record_length: 20, record_separator: crlf}
+fields:
+  - {name: id, length: 4}
+  - {name: label, length: 8}
+  - {name: amount, type: uzoned, zone: ascii, length: 8, precision: 8, scale: 2}

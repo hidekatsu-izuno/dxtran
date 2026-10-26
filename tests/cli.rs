@@ -409,8 +409,7 @@ fn input_larger_than_pool_and_external_sort() {
 }
 
 #[cfg(unix)]
-#[test]
-fn sigterm_cleans_only_its_own_work_directory() {
+fn assert_signal_cleans_only_its_own_work_directory(signal: rustix::process::Signal) {
     use std::{
         io::Write,
         process::Stdio,
@@ -465,7 +464,7 @@ fn sigterm_cleans_only_its_own_work_directory() {
         std::thread::sleep(Duration::from_millis(10));
     }
     std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    rustix::process::kill_process(rustix::process::Pid::from_child(&child), signal).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -475,7 +474,7 @@ fn sigterm_cleans_only_its_own_work_directory() {
             child.kill().unwrap();
             let _ = child.wait();
             panic!(
-                "SIGTERM was not handled promptly: {}",
+                "{signal:?} was not handled promptly: {}",
                 fs::read_to_string(d.path().join("execution.log")).unwrap()
             );
         }
@@ -485,6 +484,18 @@ fn sigterm_cleans_only_its_own_work_directory() {
     assert!(!d.path().join("out.csv").exists());
     assert_eq!(fs::read_dir(&tmp).unwrap().count(), 1);
     assert_eq!(fs::read(tmp.join("keep.txt")).unwrap(), b"keep");
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_cleans_only_its_own_work_directory() {
+    assert_signal_cleans_only_its_own_work_directory(rustix::process::Signal::TERM);
+}
+
+#[cfg(unix)]
+#[test]
+fn sigint_cleans_only_its_own_work_directory() {
+    assert_signal_cleans_only_its_own_work_directory(rustix::process::Signal::INT);
 }
 
 #[test]

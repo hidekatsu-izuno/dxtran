@@ -45,8 +45,8 @@ pub enum FieldType {
     UintBe,
     FloatLe,
     FloatBe,
-    HfpLe,
-    HfpBe,
+    HfloatLe,
+    HfloatBe,
     Zoned,
     Lzoned,
     Tzoned,
@@ -73,8 +73,8 @@ impl FieldType {
             "uint-be" => Self::UintBe,
             "float-le" => Self::FloatLe,
             "float-be" => Self::FloatBe,
-            "hfp-le" => Self::HfpLe,
-            "hfp-be" => Self::HfpBe,
+            "hfloat-le" => Self::HfloatLe,
+            "hfloat-be" => Self::HfloatBe,
             "zoned" => Self::Zoned,
             "lzoned" => Self::Lzoned,
             "tzoned" => Self::Tzoned,
@@ -112,7 +112,7 @@ impl FieldType {
     fn little(self) -> bool {
         matches!(
             self,
-            Self::IntLe | Self::UintLe | Self::FloatLe | Self::HfpLe
+            Self::IntLe | Self::UintLe | Self::FloatLe | Self::HfloatLe
         )
     }
 }
@@ -330,8 +330,8 @@ impl CompiledField {
             FieldType::IntLe | FieldType::IntBe | FieldType::UintLe | FieldType::UintBe => {
                 (1..=8).contains(&len)
             }
-            FieldType::FloatLe | FieldType::FloatBe | FieldType::HfpLe => matches!(len, 4 | 8),
-            FieldType::HfpBe => matches!(len, 4 | 8 | 16),
+            FieldType::FloatLe | FieldType::FloatBe | FieldType::HfloatLe => matches!(len, 4 | 8),
+            FieldType::HfloatBe => matches!(len, 4 | 8 | 16),
             FieldType::Lzoned | FieldType::Tzoned => len >= 2,
             _ => true,
         };
@@ -552,7 +552,7 @@ impl CompiledField {
             IntLe | IntBe => DataType::Int64,
             UintLe | UintBe => DataType::UInt64,
             FloatLe | FloatBe if self.length == Some(4) => DataType::Float32,
-            FloatLe | FloatBe | HfpLe | HfpBe => DataType::Float64,
+            FloatLe | FloatBe | HfloatLe | HfloatBe => DataType::Float64,
             Filler => DataType::Null,
         }
     }
@@ -793,7 +793,7 @@ impl CompiledField {
             FloatLe | FloatBe => ScalarValue::Float64(Some(f64::from_bits(u64::from_be_bytes(
                 b.try_into().unwrap(),
             )))),
-            HfpLe | HfpBe => ScalarValue::Float64(Some(decode_hfp(b))),
+            HfloatLe | HfloatBe => ScalarValue::Float64(Some(decode_hfp(b))),
             _ => unreachable!(),
         };
         values.scalar(value)
@@ -1124,13 +1124,13 @@ impl CompiledField {
                     }
                     v.to_be_bytes()[8 - self.length.unwrap()..].to_vec()
                 }
-                FloatLe | FloatBe | HfpLe | HfpBe => {
+                FloatLe | FloatBe | HfloatLe | HfloatBe => {
                     let v = match value {
                         ScalarValue::Float32(Some(v)) => f64::from(*v),
                         ScalarValue::Float64(Some(v)) => *v,
                         _ => return Err(Error::output("floating storage requires SQL float")),
                     };
-                    if matches!(self.kind, HfpLe | HfpBe) {
+                    if matches!(self.kind, HfloatLe | HfloatBe) {
                         encode_hfp(v, self.length.unwrap())?
                     } else if self.length == Some(4) {
                         let f = v as f32;
@@ -1245,13 +1245,34 @@ pub fn parse_decimal(s: &str, p: u8, scale: u8) -> Result<i128> {
     Ok(if neg { -value } else { value })
 }
 pub fn decimal_text(v: i128, scale: u8) -> String {
-    let digits = format!("{:0width$}", v.unsigned_abs(), width = scale as usize + 1);
-    let sign = if v < 0 { "-" } else { "" };
+    let mut out = String::new();
+    decimal_text_into(v, scale, &mut out);
+    out
+}
+pub(crate) fn decimal_text_into(v: i128, scale: u8, out: &mut String) {
+    // The public formatter accepts any u8 scale; SQL Decimal128 uses at most 38.
+    let mut digits = [b'0'; 256];
+    let mut start = digits.len();
+    let mut n = v.unsigned_abs();
+    loop {
+        start -= 1;
+        digits[start] = b'0' + pop_decimal_digit(&mut n);
+        if n == 0 {
+            break;
+        }
+    }
+    start = start.min(digits.len() - usize::from(scale) - 1);
+    let digits = std::str::from_utf8(&digits[start..]).expect("ASCII digits");
+    if v < 0 {
+        out.push('-');
+    }
     if scale == 0 {
-        format!("{sign}{digits}")
+        out.push_str(digits);
     } else {
         let i = digits.len() - scale as usize;
-        format!("{sign}{}.{}", &digits[..i], &digits[i..])
+        out.push_str(&digits[..i]);
+        out.push('.');
+        out.push_str(&digits[i..]);
     }
 }
 fn signed(v: &ScalarValue) -> Result<i64> {
@@ -1357,6 +1378,26 @@ pub fn encode_hfp(value: f64, len: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decimal_format_preserves_extreme_values_and_scales() {
+        for value in [i128::MIN, i128::MAX, -123456789, -1, 0, 1, 123456789] {
+            for scale in [0, 1, 2, 18, 38, 255] {
+                let digits = format!(
+                    "{:0width$}",
+                    value.unsigned_abs(),
+                    width = scale as usize + 1
+                );
+                let sign = if value < 0 { "-" } else { "" };
+                let expected = if scale == 0 {
+                    format!("{sign}{digits}")
+                } else {
+                    let split = digits.len() - scale as usize;
+                    format!("{sign}{}.{}", &digits[..split], &digits[split..])
+                };
+                assert_eq!(decimal_text(value, scale), expected);
+            }
+        }
+    }
     fn field(t: &str, n: usize) -> CompiledField {
         CompiledField::compile(
             Field {
@@ -1384,12 +1425,12 @@ mod tests {
                 ScalarValue::Float32(Some(1.0)),
             ),
             (
-                "hfp-be",
+                "hfloat-be",
                 vec![65, 16, 0, 0],
                 ScalarValue::Float64(Some(1.0)),
             ),
             (
-                "hfp-le",
+                "hfloat-le",
                 vec![0, 0, 16, 65],
                 ScalarValue::Float64(Some(1.0)),
             ),

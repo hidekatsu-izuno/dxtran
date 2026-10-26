@@ -1,0 +1,21 @@
+input:
+  - id: records
+    format: csv
+    path: data/wide.csv
+    encoding: utf-8
+    fields: [{name: value}]
+output:
+  - id: first
+    sql: SELECT * FROM records
+    format: csv
+    path: out/first.csv
+    mode: overwrite
+    encoding: utf-8
+  - id: too_narrow
+    sql: SELECT * FROM records
+    format: fixed
+    path: out/too_narrow.dat
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: none, record_length: 2}
+    fields: [{name: value, length: 2}]

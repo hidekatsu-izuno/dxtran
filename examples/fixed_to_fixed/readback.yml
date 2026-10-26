@@ -1,0 +1,15 @@
+input:
+  - id: names
+    format: fixed
+    path: out/names_utf16.dat
+    encoding: utf-16le
+    fixed: {record_separator: lf, record_length: 8}
+    fields:
+      - {name: label, length: 8, pad_char: '　'}
+output:
+  - id: readback
+    sql: SELECT label FROM names
+    format: csv
+    path: out/readback.csv
+    mode: overwrite
+    encoding: utf-8

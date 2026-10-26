@@ -1,0 +1,35 @@
+# 圧縮方式は拡張子で推測せず、入力・出力それぞれで明示する。
+input:
+  - import: csv.yml
+    id: csv_records
+    path: data/records.csv.gz
+    compression: gzip
+  - import: fixed.yml
+    id: fixed_records
+    path: data/records.dat.gz
+    compression: gzip
+output:
+  - import: csv.yml
+    id: csv_gzip
+    path: out/records.csv.gz
+    compression: gzip
+    mode: overwrite
+    sql: SELECT * FROM csv_records
+  - import: csv.yml
+    id: csv_zstd
+    path: out/records.csv.zst
+    compression: zstd
+    mode: overwrite
+    sql: SELECT * FROM csv_records
+  - import: fixed.yml
+    id: fixed_gzip
+    path: out/records.dat.gz
+    compression: gzip
+    mode: overwrite
+    sql: SELECT * FROM fixed_records
+  - import: fixed.yml
+    id: fixed_zstd
+    path: out/records.dat.zst
+    compression: zstd
+    mode: overwrite
+    sql: SELECT * FROM fixed_records

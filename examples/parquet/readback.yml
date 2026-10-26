@@ -1,0 +1,12 @@
+# Parquet は fields / encoding を指定せず、ファイルのスキーマを読む。
+input:
+  - id: records
+    format: parquet
+    path: out/records.parquet
+output:
+  - id: readback
+    format: csv
+    path: out/readback.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: SELECT * FROM records

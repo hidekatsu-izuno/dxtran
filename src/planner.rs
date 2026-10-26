@@ -1,3 +1,6 @@
+mod subqueries;
+pub(crate) mod unnest;
+
 use crate::{
     config::Job,
     error::{Error, Result},
@@ -17,7 +20,7 @@ use datafusion::{
     catalog::view::ViewTable,
     common::{
         Column, JoinType,
-        tree_node::{TreeNode, TreeNodeRecursion},
+        tree_node::{Transformed, TreeNode},
     },
     datasource::{provider_as_source, source_as_provider},
     logical_expr::{
@@ -344,9 +347,6 @@ pub async fn plan(ctx: &SessionContext, job: &Job) -> Result<PlannedJob> {
                     .unwrap_or_default()
             ))
         })?;
-        let schema = Arc::new(frame.schema().as_arrow().clone());
-        let layout =
-            RecordLayout::compile(d, true, Some(schema.clone())).map_err(|e| e.context(&d.id))?;
         let ordered = OrderPlanner {
             serial: 0,
             sets: sets.clone(),
@@ -368,6 +368,9 @@ pub async fn plan(ctx: &SessionContext, job: &Job) -> Result<PlannedJob> {
             .build()?;
         let columns = public_columns(&sorted);
         let plan = LogicalPlanBuilder::from(sorted).project(columns)?.build()?;
+        let schema = Arc::new(plan.schema().as_arrow().clone());
+        let layout =
+            RecordLayout::compile(d, true, Some(schema.clone())).map_err(|e| e.context(&d.id))?;
         outputs.push(PlannedOutput {
             plan,
             schema,
@@ -501,10 +504,34 @@ impl OrderPlanner {
         self.project_key(plan, cols, key)
     }
     fn rewrite(&mut self, p: &LogicalPlan) -> Result<Ordered> {
-        // Subquery expressions need their own correlated order propagation; fail during planning.
-        for expr in p.expressions() {
-            expr.apply(|e|{if matches!(e,Expr::ScalarSubquery(_)|Expr::Exists(_)|Expr::InSubquery(_)){return Err(datafusion::error::DataFusionError::Plan("order propagation for expression subqueries is unsupported; use a JOIN or CTE".into()));}Ok(TreeNodeRecursion::Continue)})?;
+        // Expression subqueries keep their public arity and correlation metadata.
+        // Their own LIMIT/window operations still need deterministic input order.
+        let mut has_subquery = false;
+        let mut rewritten = p
+            .clone()
+            .map_subqueries(|plan| {
+                has_subquery = true;
+                let LogicalPlan::Subquery(mut subquery) = plan else {
+                    unreachable!()
+                };
+                let input = self
+                    .rewrite(&subquery.subquery)
+                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+                let cols = public_columns(&input.plan);
+                subquery.subquery = Arc::new(
+                    LogicalPlanBuilder::from(input.plan)
+                        .project(cols)?
+                        .build()?,
+                );
+                Ok(Transformed::yes(LogicalPlan::Subquery(subquery)))
+            })?
+            .data;
+        if has_subquery {
+            rewritten = rewritten
+                .map_expressions(|expr| expr.transform_up(subqueries::nullable_scalar))?
+                .data;
         }
+        let p = &rewritten;
         match p {
             LogicalPlan::TableScan(scan) => {
                 let provider = source_as_provider(&scan.source)?;
@@ -550,12 +577,15 @@ impl OrderPlanner {
             }
             LogicalPlan::Projection(proj) => {
                 let input = self.rewrite(&proj.input)?;
-                self.project_key(input.plan, proj.expr.clone(), input.key)
+                let (plan, exprs) = self.predicate_subqueries(input.plan, proj.expr.clone())?;
+                self.project_key(plan, exprs, input.key)
             }
             LogicalPlan::Filter(filter) => {
                 let input = self.rewrite(&filter.input)?;
-                let plan = LogicalPlanBuilder::from(input.plan)
-                    .filter(filter.predicate.clone())?
+                let (plan, mut predicates) =
+                    self.predicate_subqueries(input.plan, vec![filter.predicate.clone()])?;
+                let plan = LogicalPlanBuilder::from(plan)
+                    .filter(predicates.remove(0).unalias())?
                     .build()?;
                 Ok(Ordered {
                     plan,
@@ -576,8 +606,35 @@ impl OrderPlanner {
                 Ok(Ordered { plan, key })
             }
             LogicalPlan::Sort(sort) => {
-                let input = self.rewrite(&sort.input)?;
-                self.rank(input, sort.expr.clone())
+                let input =
+                    self.rewrite(&subqueries::sort_input((*sort.input).clone(), &sort.expr)?)?;
+                let (plan, exprs) = self.predicate_subqueries(
+                    input.plan,
+                    sort.expr.iter().map(|s| s.expr.clone()).collect(),
+                )?;
+                let order = sort
+                    .expr
+                    .iter()
+                    .zip(exprs)
+                    .map(|(s, e)| e.unalias().sort(s.asc, s.nulls_first))
+                    .collect();
+                let ranked = self.rank(
+                    Ordered {
+                        plan,
+                        key: input.key,
+                    },
+                    order,
+                )?;
+                self.project_key(
+                    ranked.plan,
+                    sort.input
+                        .schema()
+                        .columns()
+                        .into_iter()
+                        .map(Expr::Column)
+                        .collect(),
+                    ranked.key,
+                )
             }
             LogicalPlan::Limit(limit) => {
                 let input = self.rewrite(&limit.input)?;
@@ -591,13 +648,42 @@ impl OrderPlanner {
                     key: input.key,
                 })
             }
+            LogicalPlan::Unnest(node) => {
+                let input = self.rewrite(&node.input)?;
+                let Expr::Column(key) = input.key else {
+                    unreachable!()
+                };
+                let node = datafusion::logical_expr::logical_plan::Unnest::try_new(
+                    Arc::new(input.plan),
+                    node.exec_columns.clone(),
+                    node.options.clone(),
+                )?;
+                let plan = LogicalPlan::Extension(datafusion::logical_expr::Extension {
+                    node: Arc::new(unnest::OrderedUnnest {
+                        unnest: node,
+                        key: key.clone(),
+                    }),
+                });
+                Ok(Ordered {
+                    key: key_column(&plan, &key.name),
+                    plan,
+                })
+            }
             LogicalPlan::Aggregate(agg) => {
                 let input = self.rewrite(&agg.input)?;
                 let name = self.name();
-                let mut exprs = agg.aggr_expr.clone();
+                let (input_plan, mut groups) = self.predicate_subqueries(
+                    input.plan,
+                    agg.group_expr
+                        .iter()
+                        .chain(&agg.aggr_expr)
+                        .cloned()
+                        .collect(),
+                )?;
+                let mut exprs = groups.split_off(agg.group_expr.len());
                 exprs.push(datafusion::functions_aggregate::expr_fn::min(input.key).alias(&name));
-                let plan = LogicalPlanBuilder::from(input.plan)
-                    .aggregate(agg.group_expr.clone(), exprs)?
+                let plan = LogicalPlanBuilder::from(input_plan)
+                    .aggregate(groups, exprs)?
                     .build()?;
                 let key = key_column(&plan, &name);
                 if let [Expr::GroupingSet(groups)] = agg.group_expr.as_slice() {
@@ -650,6 +736,52 @@ impl OrderPlanner {
                     .build()?;
                 let key = key_column(&plan, &name);
                 Ok(Ordered { plan, key })
+            }
+            LogicalPlan::Distinct(Distinct::On(distinct)) => {
+                let input = self.rewrite(&distinct.input)?;
+                let (plan, mut exprs) = self.predicate_subqueries(
+                    input.plan,
+                    distinct
+                        .on_expr
+                        .iter()
+                        .chain(distinct.sort_expr.iter().flatten().map(|s| &s.expr))
+                        .cloned()
+                        .collect(),
+                )?;
+                let sort_exprs = exprs.split_off(distinct.on_expr.len());
+                let sort = distinct.sort_expr.as_ref().map(|sort| {
+                    sort.iter()
+                        .zip(sort_exprs)
+                        .map(|(s, e)| e.unalias().sort(s.asc, s.nulls_first))
+                        .collect::<Vec<_>>()
+                });
+                let input = Ordered {
+                    plan,
+                    key: input.key,
+                };
+                let mut order = sort.clone().unwrap_or_default();
+                order.push(input.key.clone().sort(true, false));
+                let name = self.name();
+                let row_number = datafusion::functions_window::expr_fn::row_number()
+                    .partition_by(exprs.into_iter().map(Expr::unalias).collect())
+                    .order_by(order)
+                    .build()?
+                    .alias(&name);
+                let plan = LogicalPlanBuilder::from(input.plan)
+                    .window(vec![row_number])?
+                    .build()?;
+                let predicate = key_column(&plan, &name).eq(lit(1u64));
+                let plan = LogicalPlanBuilder::from(plan).filter(predicate)?.build()?;
+                let mut selected = Ordered {
+                    plan,
+                    key: input.key,
+                };
+                if let Some(sort) = sort {
+                    selected = self.rank(selected, sort)?;
+                }
+                let (plan, exprs) =
+                    self.predicate_subqueries(selected.plan, distinct.select_expr.clone())?;
+                self.project_key(plan, exprs, selected.key)
             }
             LogicalPlan::Union(union) => {
                 let name = self.name();
@@ -728,10 +860,11 @@ impl OrderPlanner {
             }
             LogicalPlan::Window(window) => {
                 let input = self.rewrite(&window.input)?;
-                let sorted = LogicalPlanBuilder::from(input.plan)
+                let (plan, mut exprs) =
+                    self.predicate_subqueries(input.plan, window.window_expr.clone())?;
+                let sorted = LogicalPlanBuilder::from(plan)
                     .sort(vec![input.key.clone().sort(true, false)])?
                     .build()?;
-                let mut exprs = window.window_expr.clone();
                 for e in &mut exprs {
                     let original_name = e.schema_name().to_string();
                     *e = e
@@ -749,6 +882,7 @@ impl OrderPlanner {
                             }
                         })?
                         .data
+                        .unalias()
                         .alias(original_name);
                 }
                 let mut plan = sorted;

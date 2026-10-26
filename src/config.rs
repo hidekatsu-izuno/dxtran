@@ -259,6 +259,35 @@ pub enum Format {
     Csv,
     Fixed,
     Rdw,
+    Parquet,
+}
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Compression {
+    Gzip,
+    Zstd,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Parquet {
+    #[serde(default = "parquet_compression")]
+    pub compression: String,
+    #[serde(default = "parquet_row_group_size")]
+    pub row_group_size: usize,
+}
+fn parquet_compression() -> String {
+    "snappy".into()
+}
+fn parquet_row_group_size() -> usize {
+    8192
+}
+impl Default for Parquet {
+    fn default() -> Self {
+        Self {
+            compression: parquet_compression(),
+            row_group_size: parquet_row_group_size(),
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -373,12 +402,15 @@ pub struct Dataset {
     pub id: String,
     pub format: Format,
     pub path: PathBuf,
+    pub compression: Option<Compression>,
+    #[serde(default)]
     pub encoding: String,
     #[serde(default)]
     pub fields: Vec<Field>,
     pub csv: Option<Csv>,
     pub fixed: Option<Fixed>,
     pub rdw: Option<Rdw>,
+    pub parquet: Option<Parquet>,
     pub sql: Option<String>,
     pub mode: Option<String>,
     #[serde(skip)]
@@ -445,7 +477,19 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
             if !output && (d.sql.is_some() || d.mode.is_some()) {
                 return Err(Error::config("sql/mode are output-only").context(&n.origin));
             }
-            if !output && d.fields.is_empty() {
+            if d.format == Format::Parquet {
+                for key in ["encoding", "fields"] {
+                    if let Some(node) = n.get(key) {
+                        return Err(Error::config(format!(
+                            "parquet {key} is read from the file or SQL schema; do not specify it"
+                        ))
+                        .context(&node.origin));
+                    }
+                }
+            } else if n.get("encoding").is_none() {
+                return Err(Error::config("encoding is required").context(&n.origin));
+            }
+            if !output && d.format != Format::Parquet && d.fields.is_empty() {
                 return Err(Error::config("input.fields must not be empty").context(&n.origin));
             }
             Ok(d)
@@ -480,19 +524,28 @@ pub fn load(path: &Path) -> Result<Job> {
     let Kind::Mapping(m) = &root.kind else {
         return Err(Error::config("job must be a mapping").context(&root.origin));
     };
-    if m.len() != 3
-        || !["input", "process", "output"]
-            .iter()
-            .all(|k| m.contains_key(*k))
+    if !m.contains_key("input")
+        || !m.contains_key("output")
+        || m.keys()
+            .any(|k| !matches!(k.as_str(), "input" | "process" | "output"))
     {
-        return Err(
-            Error::config("job requires exactly input, process and output").context(&root.origin),
-        );
+        return Err(Error::config(
+            "job requires input and output; process is optional and other keys are forbidden",
+        )
+        .context(&root.origin));
     }
     let input = datasets(&m["input"], false)?;
     let output = datasets(&m["output"], true)?;
-    let mut process: Vec<Process> = m["process"].decode()?;
-    if let Kind::Sequence(nodes) = &m["process"].kind {
+    let mut process: Vec<Process> = m
+        .get("process")
+        .map(Node::decode)
+        .transpose()?
+        .unwrap_or_default();
+    if let Some(Node {
+        kind: Kind::Sequence(nodes),
+        ..
+    }) = m.get("process")
+    {
         for (p, n) in process.iter_mut().zip(nodes) {
             p.origin = n.get("sql").map(|n| n.origin.clone());
         }
@@ -530,6 +583,74 @@ pub fn load(path: &Path) -> Result<Job> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn minimal_job() -> Value {
+        serde_json::json!({
+            "input": [{
+                "id": "data", "format": "csv", "path": "in.csv",
+                "encoding": "utf-8", "fields": [{"name": "value"}]
+            }],
+            "output": [{
+                "id": "result", "format": "csv", "path": "out.csv",
+                "encoding": "utf-8", "sql": "SELECT * FROM data"
+            }]
+        })
+    }
+
+    #[test]
+    fn process_is_optional_in_direct_and_imported_jobs() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().join("base.yml");
+        let imported = directory.path().join("job.yml");
+        fs::write(&imported, "import: base.yml\n").unwrap();
+        for process in [None, Some(serde_json::json!([]))] {
+            let mut value = minimal_job();
+            if let Some(process) = process {
+                value["process"] = process;
+            }
+            fs::write(&base, serde_json::to_vec(&value).unwrap()).unwrap();
+            for path in [&base, &imported] {
+                let job = load(path).unwrap();
+                assert_eq!(job.input.len(), 1);
+                assert_eq!(job.output.len(), 1);
+                assert!(job.process.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn optional_process_keeps_root_keys_and_types_strict() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("job.yml");
+        let mut invalid = Vec::new();
+        for process in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!(""),
+            serde_json::json!(false),
+            serde_json::json!(1),
+        ] {
+            let mut value = minimal_job();
+            value["process"] = process;
+            invalid.push(value);
+        }
+        for required in ["input", "output"] {
+            let mut value = minimal_job();
+            value.as_object_mut().unwrap().remove(required);
+            invalid.push(value);
+            let mut value = minimal_job();
+            value[required] = serde_json::json!([]);
+            invalid.push(value);
+        }
+        let mut unknown = minimal_job();
+        unknown["proces"] = serde_json::json!([]);
+        invalid.push(unknown);
+        for value in invalid {
+            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(load(&path).unwrap_err().code, 2, "{value}");
+        }
+    }
+
     #[test]
     fn rejects_yaml_extensions_and_duplicates() {
         for s in ["a: 1\na: 2", "a: &x 1", "a: !foo x", "a: 1\n---\na: 2"] {

@@ -1,0 +1,22 @@
+# NULL の補完値は通常値と区別できない。空白の文字・日時だけ明示的に NULL として読む。
+input:
+  - id: records
+    format: fixed
+    path: out/records.dat
+    encoding: utf-8
+    fixed: {record_separator: lf, record_length: 33}
+    fields:
+      - {name: id, length: 4}
+      - {length: 1}
+      - {name: label, length: 10, nullable: true, null_if: ['']}
+      - {name: amount, length: 8, type: decimal, precision: 7, scale: 2}
+      - {name: active, length: 1, type: boolean, true_values: ['Y'], false_values: ['N'], nullable: true, null_if: ['']}
+      - {name: business_date, length: 8, type: date, datetime_pattern: yyyyMMdd, nullable: true, null_if: ['']}
+      - {length: 1}
+output:
+  - id: readback
+    sql: SELECT * FROM records
+    format: csv
+    path: out/readback.csv
+    mode: overwrite
+    encoding: utf-8

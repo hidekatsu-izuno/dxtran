@@ -1,0 +1,27 @@
+input:
+  - id: names
+    format: fixed
+    path: data/names.dat
+    encoding: cp932
+    fixed: {record_separator: crlf, record_length: 8}
+    fields:
+      - {name: label, length: 8, pad_char: '　'}
+output:
+  - id: utf16
+    sql: SELECT label FROM names
+    format: fixed
+    path: out/names_utf16.dat
+    mode: overwrite
+    encoding: utf-16le
+    fixed: {record_separator: lf, record_length: 8}
+    fields:
+      - {name: label, length: 8, pad_char: '　'}
+  - id: utf8
+    sql: SELECT label FROM names
+    format: fixed
+    path: out/names_utf8.dat
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: none, record_length: 12}
+    fields:
+      - {name: label, length: 12, pad_char: '　'}

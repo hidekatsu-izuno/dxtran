@@ -1,0 +1,36 @@
+input:
+  - id: records
+    format: fixed
+    path: data/records.bin
+    encoding: utf-8
+    fixed: {record_separator: none}
+    fields: {import: ../layouts/all_types.yml}
+output:
+  - id: csv
+    sql: SELECT * FROM records
+    format: csv
+    path: out/records.csv
+    mode: overwrite
+    encoding: utf-8
+  - id: copy
+    sql: SELECT * FROM records
+    format: fixed
+    path: out/copy.bin
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: none}
+    fields: {import: ../layouts/all_types.yml}
+  - id: flags_lsb
+    sql: SELECT signed_be, first_flag, last_flag FROM records
+    format: fixed
+    path: out/flags_lsb.bin
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: none, record_length: 4}
+    fields:
+      - {name: signed_be, type: int-le, length: 2}
+      - name: flags
+        type: bits
+        length: 2
+        bit_order: lsb0
+        bits: [{name: first_flag, bit: 0}, {name: last_flag, bit: 15}]

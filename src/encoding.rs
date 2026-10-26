@@ -82,7 +82,8 @@ impl<R: Read> TextReader<R> {
             if self.position == self.input.len() && !self.eof {
                 let mut buf = [0; 8192];
                 let count = self.reader.read(&mut buf)?;
-                self.input = buf[..count].to_vec();
+                self.input.clear();
+                self.input.extend_from_slice(&buf[..count]);
                 self.position = 0;
                 self.eof = count == 0;
                 if self.first {
@@ -171,6 +172,13 @@ impl<W: Write> TextWriter<W> {
         self.write_text(s, false)
     }
     fn write_text(&mut self, mut s: &str, last: bool) -> Result<()> {
+        // Rust strings are already valid UTF-8, which has no encoder state.
+        if self.encoding.0 == UTF_8 {
+            return self
+                .inner
+                .write_all(s.as_bytes())
+                .map_err(|e| Error::output(e.to_string()));
+        }
         if let Some(encoder) = self.encoder.as_mut() {
             loop {
                 let mut out = [0; 16384];

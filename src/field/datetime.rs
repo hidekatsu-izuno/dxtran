@@ -483,16 +483,18 @@ impl Pattern {
                             }
                             let a = offset.unsigned_abs();
                             let (h, m, s) = (a / 3600, a / 60 % 60, a % 60);
+                            // Z / ZZ / ZZZ always use RFC 822's numeric HHmm form.
+                            let width = if *c == 'Z' { 2 } else { *n };
                             out.push(if offset < 0 { '-' } else { '+' });
                             out.push_str(&format!("{h:02}"));
-                            let colon = matches!(n, 3 | 5);
-                            if *n != 1 || m != 0 || s != 0 {
+                            let colon = matches!(width, 3 | 5);
+                            if width != 1 || m != 0 || s != 0 {
                                 if colon {
                                     out.push(':');
                                 }
                                 out.push_str(&format!("{m:02}"));
                             }
-                            if *n >= 4 && s != 0 {
+                            if width >= 4 && s != 0 {
                                 if colon {
                                     out.push(':');
                                 }
@@ -548,6 +550,25 @@ mod tests {
         let p = Pattern::compile(&f, "timestamp").unwrap();
         assert!(p.parse("2026-11-01 01:30:00").is_err());
         assert!(p.parse("2026-03-08 02:30:00").is_err());
+    }
+    #[test]
+    fn rfc822_offsets_always_include_hours_and_minutes_without_colons() {
+        for suffix in ["Z", "ZZ", "ZZZ"] {
+            for (zone, expected_offset) in [
+                ("UTC", "+0000"),
+                ("Asia/Tokyo", "+0900"),
+                ("Asia/Kolkata", "+0530"),
+                ("America/St_Johns", "-0330"),
+            ] {
+                let mut field = f(&format!("yyyy-MM-dd HH:mm:ss{suffix}"));
+                field.timezone_set = true;
+                field.timezone = Some(zone.into());
+                let pattern = Pattern::compile(&field, "timestamp").unwrap();
+                let expected = format!("2026-01-02 12:34:56{expected_offset}");
+                let value = pattern.parse(&expected).unwrap();
+                assert_eq!(pattern.format(&value).unwrap(), expected, "{zone} {suffix}");
+            }
+        }
     }
     #[test]
     fn extended_years_and_exact_fractional_precision() {

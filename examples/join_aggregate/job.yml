@@ -1,0 +1,48 @@
+input:
+  - id: sales
+    format: fixed
+    path: data/sales.dat
+    encoding: utf-8
+    fixed: {record_separator: none, record_length: 12}
+    fields:
+      - {name: customer_id, length: 4}
+      - {name: amount, length: 7, type: uzoned, zone: ascii, precision: 7, scale: 2}
+      - {name: status, length: 1}
+  - id: customers
+    format: csv
+    path: data/customers.csv
+    encoding: utf-8
+    fields: [{name: customer_id}, {name: customer_name}, {name: region}]
+process:
+  - id: active_sales
+    sql: SELECT customer_id, amount FROM sales WHERE status = 'A'
+  - id: detail
+    sql: |
+      SELECT s.customer_id, c.customer_name, c.region, s.amount
+      FROM active_sales s
+      INNER JOIN customers c ON s.customer_id = c.customer_id
+output:
+  - id: detail
+    sql: SELECT * FROM detail
+    format: csv
+    path: out/detail.csv
+    mode: overwrite
+    encoding: utf-8
+    fields: [{name: customer_id, quote_style: always}]
+  - id: totals
+    sql: |
+      SELECT region,
+             CAST(COUNT(*) AS DECIMAL(3,0)) AS order_count,
+             CAST(SUM(amount) AS DECIMAL(9,2)) AS total_amount
+      FROM detail
+      GROUP BY region
+      ORDER BY region
+    format: fixed
+    path: out/totals.dat
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: crlf, record_length: 17}
+    fields:
+      - {name: region, length: 5}
+      - {name: order_count, type: uzoned, zone: ascii, length: 3, precision: 3}
+      - {name: total_amount, type: uzoned, zone: ascii, length: 9, precision: 9, scale: 2}

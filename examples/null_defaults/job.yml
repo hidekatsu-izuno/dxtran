@@ -1,0 +1,53 @@
+# 全項目 NULL の1行を、全23型の固定長レコードへ出力する。
+input:
+  - id: seed
+    format: csv
+    path: data/seed.csv
+    encoding: utf-8
+    fields: [{name: id}]
+output:
+  - id: defaults
+    sql: |
+      SELECT CAST(NULL AS VARCHAR) AS label,
+             CAST(NULL AS DECIMAL(7,2)) AS amount,
+             CAST(NULL AS BOOLEAN) AS active,
+             CAST(NULL AS DATE) AS business_date,
+             CAST(NULL AS TIME) AS event_time,
+             CAST(NULL AS TIMESTAMP WITH TIME ZONE) AS event_at,
+             CAST(NULL AS BYTEA) AS payload,
+             CAST(NULL AS BOOLEAN) AS first_flag,
+             CAST(NULL AS BOOLEAN) AS last_flag,
+             CAST(NULL AS SMALLINT) AS signed_le,
+             CAST(NULL AS SMALLINT) AS signed_be,
+             CAST(NULL AS INT UNSIGNED) AS unsigned_le,
+             CAST(NULL AS INT UNSIGNED) AS unsigned_be,
+             CAST(NULL AS REAL) AS ieee_le,
+             CAST(NULL AS DOUBLE) AS ieee_be,
+             CAST(NULL AS DOUBLE) AS ibm_le,
+             CAST(NULL AS DOUBLE) AS ibm_be,
+             CAST(NULL AS DECIMAL(3,0)) AS trailing_sign,
+             CAST(NULL AS DECIMAL(3,0)) AS leading_sign,
+             CAST(NULL AS DECIMAL(3,0)) AS separate_sign,
+             CAST(NULL AS DECIMAL(3,0)) AS unsigned_zone,
+             CAST(NULL AS DECIMAL(3,1)) AS signed_packed,
+             CAST(NULL AS DECIMAL(3,1)) AS unsigned_packed,
+             CAST(NULL AS DECIMAL(3,1)) AS no_sign_packed
+      FROM seed
+    format: fixed
+    path: out/defaults.bin
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: none}
+    fields: {import: ../layouts/all_types.yml}
+  - id: mixed_flags
+    sql: SELECT true AS first_flag, CAST(NULL AS BOOLEAN) AS last_flag FROM seed
+    format: fixed
+    path: out/mixed_flags.bin
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: none}
+    fields:
+      - name: flags
+        type: bits
+        length: 2
+        bits: [{name: first_flag, bit: 0}, {name: last_flag, bit: 15}]

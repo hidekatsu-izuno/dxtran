@@ -1,3 +1,8 @@
+mod csv;
+mod fixed;
+pub use csv::CsvReader;
+use csv::CsvRecord;
+
 use crate::{
     config::{Dataset, Format},
     encoding::TextReader,
@@ -160,125 +165,11 @@ fn order_key(dataset: usize, record: u64) -> [u8; 32] {
     }
     key
 }
-pub struct CsvReader<R> {
-    reader: BufReader<R>,
-    delimiter: u8,
-    quote: u8,
-    pub record: u64,
-    pub line: u64,
-}
-impl<R: Read> CsvReader<R> {
-    pub fn new(reader: R, delimiter: u8, quote: u8) -> Self {
-        Self {
-            reader: BufReader::new(reader),
-            delimiter,
-            quote,
-            record: 0,
-            line: 1,
-        }
-    }
-    fn byte(&mut self) -> Result<Option<u8>> {
-        let buf = self
-            .reader
-            .fill_buf()
-            .map_err(|e| Error::input(e.to_string()))?;
-        if buf.is_empty() {
-            return Ok(None);
-        }
-        let b = buf[0];
-        self.reader.consume(1);
-        if b == b'\n' {
-            self.line += 1;
-        }
-        Ok(Some(b))
-    }
-    pub fn next_record(&mut self) -> Result<Option<Vec<Cell>>> {
-        let mut cells = vec![];
-        let mut value = vec![];
-        let (mut quoted, mut inside, mut closed, mut began) = (false, false, false, false);
-        let mut size = 0usize;
-        loop {
-            let next = self.byte()?;
-            if next.is_some() {
-                size += 1;
-                if size > framing::MAX_RECORD {
-                    return Err(Error::input("CSV record exceeds 16 MiB"));
-                }
-            }
-            match next {
-                None => {
-                    if inside {
-                        return Err(Error::input("unclosed CSV quote"));
-                    }
-                    if !began && cells.is_empty() && value.is_empty() {
-                        return Ok(None);
-                    }
-                    cells.push(cell(value, quoted)?);
-                    self.record += 1;
-                    return Ok(Some(cells));
-                }
-                Some(b) if inside => {
-                    if b == self.quote {
-                        inside = false;
-                        closed = true;
-                    } else {
-                        value.push(b);
-                    }
-                    began = true;
-                }
-                Some(b) if closed && b == self.quote => {
-                    value.push(b);
-                    inside = true;
-                    closed = false;
-                }
-                Some(b) if b == self.delimiter => {
-                    cells.push(cell(std::mem::take(&mut value), quoted)?);
-                    quoted = false;
-                    closed = false;
-                    began = true;
-                }
-                Some(b'\n') => {
-                    cells.push(cell(value, quoted)?);
-                    self.record += 1;
-                    return Ok(Some(cells));
-                }
-                Some(b'\r') => {
-                    if self.byte()? != Some(b'\n') {
-                        return Err(Error::input("CSV line ending must be LF or CRLF"));
-                    }
-                    cells.push(cell(value, quoted)?);
-                    self.record += 1;
-                    return Ok(Some(cells));
-                }
-                Some(_) if closed => {
-                    return Err(Error::input("invalid character after closing CSV quote"));
-                }
-                Some(b) if b == self.quote => {
-                    if !value.is_empty() {
-                        return Err(Error::input("quote in an unquoted CSV field"));
-                    }
-                    quoted = true;
-                    inside = true;
-                    began = true;
-                }
-                Some(b) => {
-                    value.push(b);
-                    began = true;
-                }
-            }
-        }
-    }
-}
-fn cell(value: Vec<u8>, was_quoted: bool) -> Result<Cell> {
-    Ok(Cell {
-        value: String::from_utf8(value).map_err(|_| Error::input("invalid decoded UTF-8"))?,
-        was_quoted,
-    })
-}
 
 enum Reader {
-    Csv(CsvReader<TextReader<File>>),
-    Physical(BufReader<File>),
+    Csv(CsvReader<TextReader<crate::compression::Input>>),
+    Physical(BufReader<crate::compression::Input>),
+    Parquet(Box<crate::parquet_io::Input>),
 }
 pub struct InputReader {
     dataset: Dataset,
@@ -287,7 +178,7 @@ pub struct InputReader {
     record: u64,
     byte_position: u64,
     body: Vec<u8>,
-    cells: Vec<Cell>,
+    cells: CsvRecord,
     record_ready: bool,
     record_position: u64,
     row_base_size: usize,
@@ -307,13 +198,20 @@ impl InputReader {
         let reader = if dataset.format == Format::Csv {
             let options = dataset.csv.clone().unwrap_or_default();
             let mut reader = CsvReader::new(
-                TextReader::new(file, layout.encoding),
+                TextReader::new(
+                    crate::compression::Input::new(file, dataset.compression)
+                        .map_err(|e| Error::input(e.to_string()).context(dataset.path.display()))?,
+                    layout.encoding,
+                ),
                 options.delimiter.as_bytes()[0],
                 options.quote.as_bytes()[0],
             );
             if options.header {
                 let header = reader
-                    .next_record()?
+                    .next_record()
+                    .map_err(|e| {
+                        e.context(format!("input {} {}", dataset.id, dataset.path.display()))
+                    })?
                     .ok_or_else(|| Error::input("required CSV header is missing"))?;
                 if header.iter().map(|c| c.value.as_str()).ne(layout
                     .schema
@@ -328,17 +226,30 @@ impl InputReader {
                 }
             }
             Reader::Csv(reader)
+        } else if dataset.format == Format::Parquet {
+            Reader::Parquet(Box::new(crate::parquet_io::Input::open(
+                dataset,
+                &layout.schema,
+                file,
+            )?))
         } else {
-            Reader::Physical(BufReader::new(file))
+            Reader::Physical(BufReader::new(
+                crate::compression::Input::new(file, dataset.compression)
+                    .map_err(|e| Error::input(e.to_string()).context(dataset.path.display()))?,
+            ))
         };
-        let row_base_size: usize = layout
-            .schema
-            .fields()
-            .iter()
-            .map(|f| ScalarValue::try_from(f.data_type()).map(|v| v.size()))
-            .collect::<DFResult<Vec<_>>>()?
-            .into_iter()
-            .sum();
+        let row_base_size: usize = if dataset.format == Format::Parquet {
+            0
+        } else {
+            layout
+                .schema
+                .fields()
+                .iter()
+                .map(|f| ScalarValue::try_from(f.data_type()).map(|v| v.size()))
+                .collect::<DFResult<Vec<_>>>()?
+                .into_iter()
+                .sum()
+        };
         let physical_row_bound = layout.fields.iter().fold(row_base_size, |size, f| {
             size.saturating_add(field_extra_bound(f, f.length.unwrap_or(0)))
         });
@@ -349,7 +260,7 @@ impl InputReader {
             record: 0,
             byte_position: 0,
             body: Vec::new(),
-            cells: Vec::new(),
+            cells: CsvRecord::default(),
             record_ready: false,
             record_position: 0,
             row_base_size,
@@ -362,6 +273,15 @@ impl InputReader {
     }
     pub fn next_row_into(&mut self, row: &mut Vec<ScalarValue>) -> Result<bool> {
         row.clear();
+        if matches!(self.reader, Reader::Parquet(_)) {
+            let Some(batch) = self.parquet_batch(self.layout.schema.clone(), None, 1)? else {
+                return Ok(false);
+            };
+            for array in batch.columns() {
+                row.push(ScalarValue::try_from_array(array, 0)?);
+            }
+            return Ok(true);
+        }
         if !self.read_record()? {
             return Ok(false);
         }
@@ -386,18 +306,18 @@ impl InputReader {
             ))
         };
         match &mut self.reader {
+            Reader::Parquet(_) => unreachable!("parquet uses native Arrow batches"),
             Reader::Csv(reader) => {
                 let first_line = reader.line;
-                let Some(cells) = reader.next_record().map_err(context)? else {
+                if !reader.read_record(&mut self.cells).map_err(context)? {
                     return Ok(false);
                 };
-                if cells.len() != self.layout.fields.len() {
+                if self.cells.len() != self.layout.fields.len() {
                     return Err(context(Error::input(format!(
                         "CSV column count mismatch, physical lines {first_line}..{}",
                         reader.line
                     ))));
                 }
-                self.cells = cells;
             }
             Reader::Physical(reader) => {
                 let found = match self.dataset.format {
@@ -447,11 +367,11 @@ impl InputReader {
             ))
         };
         if self.dataset.format == Format::Csv {
-            for (cell, field) in self.cells.iter().zip(&self.layout.fields) {
-                let text = if cell.value.is_empty() && !cell.was_quoted {
+            for ((value, was_quoted), field) in self.cells.cells().zip(&self.layout.fields) {
+                let text = if value.is_empty() && !was_quoted {
                     None
                 } else {
-                    Some(cell.value.as_str())
+                    Some(value)
                 };
                 field.parse_text_to(text, values).map_err(|e| {
                     context(e.context(format!("column {}", field.spec.name.as_deref().unwrap())))
@@ -482,9 +402,7 @@ impl InputReader {
     fn row_size_bound(&self) -> usize {
         if self.dataset.format == Format::Csv {
             // Decoded strings/binaries cannot exceed their UTF-8 CSV cell size.
-            return self.cells.iter().fold(self.row_base_size, |size, c| {
-                size.saturating_add(c.value.len())
-            });
+            return self.row_base_size.saturating_add(self.cells.bytes());
         }
         let mut bound = self.physical_row_bound;
         if self.layout.rest {
@@ -493,11 +411,14 @@ impl InputReader {
         }
         bound
     }
-    fn next_batch(
+    pub(crate) fn next_batch(
         &mut self,
         schema: SchemaRef,
         dataset_no: Option<usize>,
     ) -> Result<Option<RecordBatch>> {
+        if matches!(self.reader, Reader::Parquet(_)) {
+            return self.parquet_batch(schema, dataset_no, 8192);
+        }
         let mut columns: Vec<_> = schema
             .fields()
             .iter()
@@ -559,6 +480,45 @@ impl InputReader {
             schema,
             arrays,
             &RecordBatchOptions::new().with_row_count(Some(rows)),
+        )
+        .map(Some)
+        .map_err(DataFusionError::from)
+        .map_err(Error::from)
+    }
+    fn parquet_batch(
+        &mut self,
+        schema: SchemaRef,
+        dataset_no: Option<usize>,
+        max_rows: usize,
+    ) -> Result<Option<RecordBatch>> {
+        let Reader::Parquet(reader) = &mut self.reader else {
+            unreachable!()
+        };
+        let Some(batch) = reader.take(max_rows).map_err(|e| {
+            e.context(format!(
+                "input {} {} record {}",
+                self.dataset.id,
+                self.dataset.path.display(),
+                self.record + 1
+            ))
+        })?
+        else {
+            return Ok(None);
+        };
+        let mut arrays = batch.columns().to_vec();
+        if let Some(dataset) = dataset_no {
+            let mut keys = StringBuilder::with_capacity(batch.num_rows(), batch.num_rows() * 32);
+            for row in 1..=batch.num_rows() {
+                let key = order_key(dataset, self.record + row as u64);
+                keys.append_value(std::str::from_utf8(&key).expect("ASCII order key"));
+            }
+            arrays.push(Arc::new(keys.finish()));
+        }
+        self.record += batch.num_rows() as u64;
+        RecordBatch::try_new_with_options(
+            schema,
+            arrays,
+            &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
         )
         .map(Some)
         .map_err(DataFusionError::from)
@@ -704,12 +664,20 @@ impl ExecutionPlan for SourceExec {
     fn execute(
         &self,
         partition: usize,
-        _: Arc<TaskContext>,
+        context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(DataFusionError::Execution(
                 "invalid source partition".into(),
             ));
+        }
+        let limit = match context.memory_pool().memory_limit() {
+            datafusion::execution::memory_pool::MemoryLimit::Finite(n) => n,
+            _ => usize::MAX,
+        };
+        let workers = crate::parallel::workers(context.session_config().target_partitions(), limit);
+        if workers > 1 && fixed::eligible(&self.source)? {
+            return fixed::stream(self.source.clone(), self.projection.clone(), workers);
         }
         let source = self.source.clone();
         let projection = self.projection.clone();
@@ -814,8 +782,8 @@ mod tests {
             ("uint-be", "0102"),
             ("float-le", "0000803f"),
             ("float-be", "3ff0000000000000"),
-            ("hfp-le", "0000000000001041"),
-            ("hfp-be", "41100000000000003300000000000000"),
+            ("hfloat-le", "0000000000001041"),
+            ("hfloat-be", "41100000000000003300000000000000"),
             ("zoned", "f1f2c3"),
             ("lzoned", "4ef1f2f3"),
             ("tzoned", "f1f2f34e"),

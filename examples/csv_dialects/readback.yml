@@ -1,0 +1,36 @@
+input:
+  - id: utf16_names
+    format: csv
+    path: out/names_utf16.tsv
+    encoding: utf-16le
+    csv: {delimiter: "\t"}
+    fields: [{name: id}, {name: label}]
+  - id: jis_names
+    format: csv
+    path: out/names_jis.csv
+    encoding: iso-2022-jp
+    fields: [{name: id}, {name: label}]
+  - id: bom_names
+    format: csv
+    path: data/names_utf16be.csv
+    encoding: utf-16be
+    fields: [{name: id}, {name: label}]
+output:
+  - id: utf16_readback
+    sql: SELECT * FROM utf16_names
+    format: csv
+    path: out/utf16_readback.csv
+    mode: overwrite
+    encoding: utf-8
+  - id: jis_readback
+    sql: SELECT * FROM jis_names
+    format: csv
+    path: out/jis_readback.csv
+    mode: overwrite
+    encoding: utf-8
+  - id: bom_readback
+    sql: SELECT * FROM bom_names
+    format: csv
+    path: out/bom_readback.csv
+    mode: overwrite
+    encoding: utf-8

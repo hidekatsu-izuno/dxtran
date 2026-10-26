@@ -1,4 +1,4 @@
-use crate::field::FieldType;
+mod physical;
 use crate::{
     config::{Dataset, Format, Job},
     encoding::TextWriter,
@@ -14,16 +14,19 @@ use datafusion::{
     },
     common::ScalarValue,
 };
+pub(crate) use physical::PhysicalEncoder;
 use std::{
     collections::BTreeSet,
     fs::{self, File},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 enum Writer {
-    Csv(TextWriter<BufWriter<File>>),
-    Physical(BufWriter<File>),
+    Csv(TextWriter<crate::compression::Output>),
+    Physical(crate::compression::Output),
+    Parquet(Box<parquet::arrow::ArrowWriter<BufWriter<File>>>),
 }
 pub struct OutputSink {
     dataset: Dataset,
@@ -34,18 +37,32 @@ pub struct OutputSink {
     delimiter: char,
     quote: char,
     line_ending: &'static str,
+    physical: Option<Arc<PhysicalEncoder>>,
+    quote_always: Vec<bool>,
+    csv_buffer: String,
 }
 pub fn csv_cell(value: Option<&str>, always: bool, delimiter: char, quote: char) -> String {
-    let Some(s) = value else {
-        return String::new();
-    };
+    let mut out = String::new();
+    if let Some(s) = value {
+        append_csv_cell(&mut out, s, always, delimiter, quote);
+    }
+    out
+}
+fn append_csv_cell(out: &mut String, s: &str, always: bool, delimiter: char, quote: char) {
     if always || s.is_empty() || s.contains([delimiter, quote, '\r', '\n']) {
-        format!(
-            "{quote}{}{quote}",
-            s.replace(quote, &format!("{quote}{quote}"))
-        )
+        out.push(quote);
+        let mut rest = s;
+        for (position, _) in s.match_indices(quote) {
+            let end = position + quote.len_utf8();
+            let consumed = s.len() - rest.len();
+            out.push_str(&rest[..end - consumed]);
+            out.push(quote);
+            rest = &s[end..];
+        }
+        out.push_str(rest);
+        out.push(quote);
     } else {
-        s.into()
+        out.push_str(s);
     }
 }
 fn place_field(body: &mut Vec<u8>, offset: usize, bytes: &[u8]) {
@@ -74,11 +91,27 @@ impl OutputSink {
             "\n"
         };
         let writer = if dataset.format == Format::Csv {
-            Writer::Csv(TextWriter::new(BufWriter::new(file), layout.encoding))
+            Writer::Csv(TextWriter::new(
+                crate::compression::Output::new(file, dataset.compression)
+                    .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
+                layout.encoding,
+            ))
+        } else if dataset.format == Format::Parquet {
+            Writer::Parquet(Box::new(
+                parquet::arrow::ArrowWriter::try_new(
+                    BufWriter::new(file),
+                    Arc::new(result_schema.clone()),
+                    Some(crate::parquet_io::properties(dataset)?),
+                )
+                .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
+            ))
         } else {
-            Writer::Physical(BufWriter::new(file))
+            Writer::Physical(
+                crate::compression::Output::new(file, dataset.compression)
+                    .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
+            )
         };
-        let indices = layout
+        let indices: Vec<Vec<usize>> = layout
             .fields
             .iter()
             .map(|f| {
@@ -92,6 +125,13 @@ impl OutputSink {
                     .collect::<Result<Vec<_>>>()
             })
             .collect::<Result<_>>()?;
+        let physical = matches!(dataset.format, Format::Fixed | Format::Rdw)
+            .then(|| Arc::new(PhysicalEncoder::new(dataset, layout, &indices)));
+        let quote_always = layout
+            .fields
+            .iter()
+            .map(|f| f.spec.quote_style.as_deref().or(csv.quote_style.as_deref()) == Some("always"))
+            .collect();
         let mut sink = Self {
             dataset: dataset.clone(),
             layout: layout.clone(),
@@ -101,6 +141,9 @@ impl OutputSink {
             delimiter,
             quote,
             line_ending,
+            physical,
+            quote_always,
+            csv_buffer: String::new(),
         };
         if dataset.format == Format::Csv && csv.header {
             let header = sink
@@ -126,83 +169,67 @@ impl OutputSink {
         Ok(sink)
     }
     pub fn batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let csv = self.dataset.csv.clone().unwrap_or_default();
-        let mut body = Vec::with_capacity(self.layout.length);
-        let mut bytes = Vec::new();
-        let mut values = Vec::new();
+        if let Writer::Parquet(writer) = &mut self.writer {
+            writer.write(&batch).map_err(|e| {
+                Error::output(e.to_string()).context(format!(
+                    "output {} record {}",
+                    self.dataset.id,
+                    self.rows + 1
+                ))
+            })?;
+            if writer.memory_size() >= framing::MAX_RECORD {
+                writer
+                    .flush()
+                    .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
+            }
+            self.rows += batch.num_rows() as u64;
+            return Ok(());
+        }
+        if let (Some(encoder), Writer::Physical(writer)) = (&self.physical, &mut self.writer) {
+            return encoder.write_batch(&batch, writer, &mut self.rows, None);
+        }
+        let mut text = String::new();
         for row in 0..batch.num_rows() {
-            body.clear();
-            body.resize(self.layout.length, 0);
-            let mut cells = vec![];
-            for (f, indices) in self.layout.fields.iter().zip(&self.indices) {
+            for (field_no, (f, indices)) in self.layout.fields.iter().zip(&self.indices).enumerate()
+            {
+                if field_no > 0 {
+                    self.csv_buffer.push(self.delimiter);
+                }
                 let result = (|| -> Result<()> {
-                    // Borrow strings from Arrow rather than allocating an owned ScalarValue.
-                    if self.dataset.format != Format::Csv && f.kind == FieldType::String {
-                        let column = batch.column(indices[0]);
-                        if !column.is_null(row) {
-                            let text = match column.data_type() {
-                                DataType::Utf8 => Some(column.as_string::<i32>().value(row)),
-                                DataType::LargeUtf8 => Some(column.as_string::<i64>().value(row)),
-                                DataType::Utf8View => Some(column.as_string_view().value(row)),
-                                _ => None,
-                            };
-                            if let Some(text) = text {
-                                f.encode_string_into(text, &mut bytes)?;
-                                place_field(&mut body, f.offset, &bytes);
-                                return Ok(());
-                            }
+                    let column = batch.column(indices[0]);
+                    if column.is_null(row) {
+                        if f.spec.nullable != Some(true) {
+                            return Err(Error::output("NULL in non-nullable CSV output"));
                         }
+                        return Ok(());
                     }
-                    if self.dataset.format != Format::Csv
-                        && f.kind.decimal()
-                        && f.kind != FieldType::Decimal
-                    {
-                        let column = batch.column(indices[0]);
-                        if let DataType::Decimal128(_, scale) = column.data_type() {
-                            let array = column.as_primitive::<Decimal128Type>();
-                            if !array.is_null(row) {
-                                f.encode_decimal_into(array.value(row), *scale, &mut bytes)?;
-                                place_field(&mut body, f.offset, &bytes);
-                                return Ok(());
-                            }
+                    text.clear();
+                    let value = match column.data_type() {
+                        DataType::Utf8 => column.as_string::<i32>().value(row),
+                        DataType::LargeUtf8 => column.as_string::<i64>().value(row),
+                        DataType::Utf8View => column.as_string_view().value(row),
+                        DataType::Decimal128(_, scale) => {
+                            let value = column.as_primitive::<Decimal128Type>().value(row);
+                            let value =
+                                crate::field::rescale(value, *scale as i32, f.scale as i32)?;
+                            crate::field::check_precision(value, f.precision)?;
+                            crate::field::decimal_text_into(value, f.scale, &mut text);
+                            &text
                         }
-                    }
-                    values.clear();
-                    for i in indices {
-                        let column = batch.column(*i);
-                        let value = if let DataType::Decimal128(p, s) = column.data_type() {
-                            let array = column.as_primitive::<Decimal128Type>();
-                            ScalarValue::Decimal128(
-                                (!array.is_null(row)).then(|| array.value(row)),
-                                *p,
-                                *s,
-                            )
-                        } else {
-                            ScalarValue::try_from_array(column, row).map_err(Error::from)?
-                        };
-                        values.push(value);
-                    }
-                    if self.dataset.format == Format::Csv {
-                        let v = &values[0];
-                        if v.is_null() {
-                            if f.spec.nullable != Some(true) {
-                                return Err(Error::output("NULL in non-nullable CSV output"));
-                            }
-                            cells.push(String::new());
-                        } else {
-                            let text = f.format_text(v)?;
-                            cells.push(csv_cell(
-                                Some(&text),
-                                f.spec.quote_style.as_deref().or(csv.quote_style.as_deref())
-                                    == Some("always"),
-                                self.delimiter,
-                                self.quote,
-                            ));
+                        _ => {
+                            let value =
+                                ScalarValue::try_from_array(column, row).map_err(Error::from)?;
+                            text = f.format_text(&value)?;
+                            &text
                         }
-                    } else {
-                        f.encode_into(&values, self.dataset.format, &mut bytes)?;
-                        place_field(&mut body, f.offset, &bytes);
-                    }
+                    };
+                    append_csv_cell(
+                        &mut self.csv_buffer,
+                        value,
+                        self.quote_always[field_no],
+                        self.delimiter,
+                        self.quote,
+                    );
                     Ok(())
                 })();
                 result.map_err(|e| {
@@ -216,37 +243,58 @@ impl OutputSink {
                     ))
                 })?;
             }
-            match &mut self.writer {
-                Writer::Csv(w) => {
-                    w.text(&(cells.join(&csv.delimiter) + self.line_ending))?;
-                }
-                Writer::Physical(w) => {
-                    if self.dataset.format == Format::Rdw {
-                        framing::write_rdw(w, &body, self.layout.max_record_length)?;
-                    } else {
-                        w.write_all(&body)
-                            .and_then(|_| w.write_all(&self.layout.separator))
-                            .map_err(|e| Error::output(e.to_string()))?;
-                    }
-                }
+            self.csv_buffer.push_str(self.line_ending);
+            if self.csv_buffer.len() >= 64 * 1024 {
+                self.flush_csv()?;
             }
             self.rows += 1;
         }
+        self.flush_csv()?;
         Ok(())
     }
-    pub fn finish(mut self) -> Result<u64> {
-        match &mut self.writer {
-            Writer::Csv(w) => {
+    fn flush_csv(&mut self) -> Result<()> {
+        let Writer::Csv(writer) = &mut self.writer else {
+            unreachable!()
+        };
+        writer.text(&self.csv_buffer)?;
+        self.csv_buffer.clear();
+        Ok(())
+    }
+    pub(crate) fn fixed_encoder(&self) -> Option<Arc<PhysicalEncoder>> {
+        (self.dataset.format == Format::Fixed && crate::parallel::worthwhile(&self.layout))
+            .then(|| self.physical.as_ref().unwrap().clone())
+    }
+    pub(crate) fn is_compressed(&self) -> bool {
+        self.dataset.compression.is_some()
+    }
+    pub(crate) fn write_fixed_bytes(&mut self, bytes: &[u8], rows: usize) -> Result<()> {
+        let Writer::Physical(writer) = &mut self.writer else {
+            unreachable!()
+        };
+        writer
+            .write_all(bytes)
+            .map_err(|e| Error::output(e.to_string()))?;
+        self.rows += rows as u64;
+        Ok(())
+    }
+    pub fn finish(self) -> Result<u64> {
+        match self.writer {
+            Writer::Parquet(mut writer) => {
+                writer
+                    .finish()
+                    .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
+                writer
+                    .inner_mut()
+                    .flush()
+                    .and_then(|_| writer.inner().get_ref().sync_all())
+                    .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
+            }
+            Writer::Csv(mut w) => {
                 w.finish()?;
-                w.inner
-                    .get_ref()
-                    .sync_all()
-                    .map_err(|e| Error::output(e.to_string()))?;
+                w.inner.finish().map_err(|e| Error::output(e.to_string()))?;
             }
             Writer::Physical(w) => {
-                w.flush()
-                    .and_then(|_| w.get_ref().sync_all())
-                    .map_err(|e| Error::output(e.to_string()))?;
+                w.finish().map_err(|e| Error::output(e.to_string()))?;
             }
         }
         Ok(self.rows)
@@ -281,25 +329,12 @@ fn ancestor(path: &Path) -> Result<PathBuf> {
 }
 #[cfg(target_os = "linux")]
 fn mount(path: &Path) -> Result<(u64, u64)> {
-    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+    use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
+    use std::os::unix::fs::MetadataExt;
     let meta = fs::metadata(path).map_err(|e| Error::config(e.to_string()))?;
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| Error::config("NUL in path"))?;
-    let mut stat = std::mem::MaybeUninit::<libc::statx>::zeroed();
     // statx follows the same resolved path that rename will use; mount IDs detect bind mounts too.
-    let rc = unsafe {
-        libc::statx(
-            libc::AT_FDCWD,
-            c.as_ptr(),
-            0,
-            libc::STATX_MNT_ID,
-            stat.as_mut_ptr(),
-        )
-    };
-    if rc != 0 {
-        return Err(Error::config(std::io::Error::last_os_error().to_string()));
-    }
-    let stat = unsafe { stat.assume_init() };
+    let stat = statx(CWD, path, AtFlags::empty(), StatxFlags::MNT_ID)
+        .map_err(|e| Error::config(e.to_string()))?;
     Ok((meta.dev(), stat.stx_mnt_id))
 }
 #[cfg(not(target_os = "linux"))]
@@ -376,24 +411,13 @@ fn sync_dir(path: &Path) -> Result<()> {
 fn publish_one(source: &Path, dest: &Path, overwrite: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::unix::ffi::OsStrExt;
-        let source_c = std::ffi::CString::new(source.as_os_str().as_bytes())
-            .map_err(|_| Error::output("invalid path"))?;
-        let dest_c = std::ffi::CString::new(dest.as_os_str().as_bytes())
-            .map_err(|_| Error::output("invalid path"))?;
-        let rc = unsafe {
-            libc::renameat2(
-                libc::AT_FDCWD,
-                source_c.as_ptr(),
-                libc::AT_FDCWD,
-                dest_c.as_ptr(),
-                if overwrite { 0 } else { libc::RENAME_NOREPLACE },
-            )
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        let flags = if overwrite {
+            RenameFlags::empty()
+        } else {
+            RenameFlags::NOREPLACE
         };
-        if rc != 0 {
-            return Err(Error::output(std::io::Error::last_os_error().to_string()));
-        }
-        Ok(())
+        renameat_with(CWD, source, CWD, dest, flags).map_err(|e| Error::output(e.to_string()))
     }
     #[cfg(not(target_os = "linux"))]
     {

@@ -1,0 +1,4 @@
+id,label,amount,active,business_date
+0002,東京,12.30,true,2026-10-26
+0001,A,-0.50,false,2024-02-29
+0003,,0.00,,

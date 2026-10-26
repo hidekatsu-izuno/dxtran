@@ -1,0 +1,14 @@
+input:
+  - id: records
+    format: fixed
+    path: out/records.bin
+    encoding: utf-8
+    fixed: {record_separator: none}
+    fields: {import: ../layouts/all_types.yml}
+output:
+  - id: readback
+    sql: SELECT * FROM records
+    format: csv
+    path: out/readback.csv
+    mode: overwrite
+    encoding: utf-8

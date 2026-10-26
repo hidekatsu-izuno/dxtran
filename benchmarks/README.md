@@ -1,6 +1,21 @@
-# 固定長 READ/WRITE の性能比較
+# 入出力の性能比較
 
-[追加高速化の比較](DIRECT_ARROW.md)、[最初の高速化前後の比較](OPTIMIZATION.md)、[初回の測定結果](RESULTS.md) と、生データを保存しています。
+## CSV
+
+[CSV 高速化の測定結果](CSV.md)と[全試行のデータ](results/csv-comparison-256mib.json)を保存しています。
+
+```sh
+# 変更前の release バイナリを別の場所に保存してから実行
+python3 -B benchmarks/csv_io.py --size-mib 256 --threads 1 4 --repeats 5 \
+  --compare-dxt /path/to/before/dxt \
+  --result benchmarks/results/csv-comparison-256mib.json
+```
+
+UTF-8 の文字列1項目、文字列8項目＋Decimal128 8項目、引用符・埋め込み改行・日本語・NULL・空文字を含む16項目を比較します。ヘッダーなしの `SELECT * FROM data` で、出力が入力と同じバイト列になるデータです。可変長のケースは256 MiB以内で最後の完全なレコードまで生成します。ウォームキャッシュ、出力の同期・公開を含むCLI全体を計測し、各試行で出力サイズとSHA-256を検証します。各ケースの実行順をシャッフルし、全試行・CPU時間・最大RSS・実行計画・バイナリハッシュをJSONに保存します。
+
+## 固定長 READ/WRITE
+
+[固定長変換の並列化](PARALLEL_FIXED.md)、[Arrow 直接変換の比較](DIRECT_ARROW.md)、[最初の高速化前後の比較](OPTIMIZATION.md)、[初回の測定結果](RESULTS.md) と、生データを保存しています。
 
 同じ256バイト固定長ファイルを、次の方式で読み書きします。
 
@@ -30,6 +45,8 @@ python3 benchmarks/fixed_io.py --skip-build --size-mib 256 --repeats 3 \
 変更前後の比較では、変更前の release バイナリを別の場所に保存し、変更後のビルドで次を実行できます。
 `--compare-dxt` / `--compare-codec` を渡すと、`before_` 付きの方式も同じ入力・条件・実行順のシャッフルに含めます。
 比較用バイナリの SHA-256 も保存します。
+
+`--threads 1 2 4 8` のように比較する並列度を指定できます。省略時は従来どおり 1 と 4 です。
 
 ```sh
 python3 benchmarks/fixed_io.py --size-mib 256 --repeats 5 \

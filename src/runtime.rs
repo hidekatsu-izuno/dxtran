@@ -1,4 +1,5 @@
 mod cooperative;
+mod fixed;
 mod signals;
 use crate::{
     config,
@@ -12,6 +13,7 @@ use datafusion::{
         disk_manager::{DiskManagerBuilder, DiskManagerMode},
         memory_pool::FairSpillPool,
         runtime_env::RuntimeEnvBuilder,
+        session_state::SessionStateBuilder,
     },
     physical_plan::displayable,
     prelude::{SessionConfig, SessionContext},
@@ -29,7 +31,7 @@ use std::{
 #[command(
     name = "dxt",
     version,
-    about = "SQL batch conversion for CSV, fixed and RDW files"
+    about = "SQL batch conversion for CSV, fixed, RDW and Parquet files"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -163,7 +165,13 @@ fn context(resources: &Resources, spill: Option<&Path>) -> Result<SessionContext
     config.options_mut().sql_parser.collect_spans = true;
     config.options_mut().execution.sort_spill_reservation_bytes =
         (resources.memory_limit / resources.threads / 8).min(10 * 1024 * 1024);
-    Ok(SessionContext::new_with_config_rt(config, runtime))
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_runtime_env(runtime)
+        .with_default_features()
+        .with_query_planner(Arc::new(planner::unnest::OrderedQueryPlanner))
+        .build();
+    Ok(SessionContext::new_with_state(state))
 }
 async fn execute(cli: Cli, run_id: &str) -> Result<()> {
     let (path, resources, run, scan, explain) = match cli.command {
@@ -192,6 +200,9 @@ async fn execute(cli: Cli, run_id: &str) -> Result<()> {
         json!({"event":"start","run_id":run_id,"version":env!("CARGO_PKG_VERSION"),"time":chrono::Utc::now().to_rfc3339(),"job":path,"hashes":job.hashes,"expanded_hash":job.expanded_hash,"threads":resources.threads,"memory_limit":resources.memory_limit}),
     );
     for d in job.input.iter().chain(&job.output) {
+        if d.format == config::Format::Parquet {
+            continue;
+        }
         let enc = crate::encoding::TextEncoding::resolve(&d.encoding)?;
         log(
             json!({"event":"encoding","run_id":run_id,"definition":d.id,"label":d.encoding,"canonical":enc.0.name(),"output_encoding":if enc.0==encoding_rs::UTF_16LE || enc.0==encoding_rs::UTF_16BE {enc.0.name()}else{enc.0.output_encoding().name()}}),
@@ -222,8 +233,8 @@ async fn execute(cli: Cli, run_id: &str) -> Result<()> {
             let count = tokio::task::spawn_blocking(move || -> Result<u64> {
                 let mut reader = InputReader::open(&dataset, &layout)?;
                 let mut count = 0;
-                while reader.next_row()?.is_some() {
-                    count += 1;
+                while let Some(batch) = reader.next_batch(layout.schema.clone(), None)? {
+                    count += batch.num_rows() as u64;
                 }
                 Ok(count)
             })
@@ -271,20 +282,28 @@ async fn execute(cli: Cli, run_id: &str) -> Result<()> {
         let mut stream =
             datafusion::physical_plan::execute_stream(physical.clone(), ctx.task_ctx())
                 .map_err(original_error)?;
-        while let Some(batch) = stream.next().await {
-            let batch = batch.map_err(|e| original_error(e).context(format!("output {}", d.id)))?;
-            let permit = conversion_budget
-                .clone()
-                .acquire_owned()
+        let workers = crate::parallel::workers(resources.threads, resources.memory_limit);
+        if let Some(encoder) = sink.fixed_encoder().filter(|_| workers > 1) {
+            sink = fixed::write(sink, stream, encoder, conversion_budget.clone(), workers)
                 .await
-                .map_err(|e| Error::sql(e.to_string()))?;
-            sink = tokio::task::spawn_blocking(move || -> Result<sink::OutputSink> {
-                sink.batch(batch)?;
-                drop(permit);
-                Ok(sink)
-            })
-            .await
-            .map_err(|e| Error::output(e.to_string()))??;
+                .map_err(|e| e.context(format!("output {}", d.id)))?;
+        } else {
+            while let Some(batch) = stream.next().await {
+                let batch =
+                    batch.map_err(|e| original_error(e).context(format!("output {}", d.id)))?;
+                let permit = conversion_budget
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| Error::sql(e.to_string()))?;
+                sink = tokio::task::spawn_blocking(move || -> Result<sink::OutputSink> {
+                    sink.batch(batch)?;
+                    drop(permit);
+                    Ok(sink)
+                })
+                .await
+                .map_err(|e| Error::output(e.to_string()))??;
+            }
         }
         let rows = tokio::task::spawn_blocking(move || sink.finish())
             .await

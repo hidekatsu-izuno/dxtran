@@ -1,0 +1,27 @@
+input:
+  - id: records
+    format: csv
+    path: data/records.csv
+    encoding: utf-8
+    fields:
+      - {name: id}
+      - {name: label, nullable: true}
+      - {name: amount, type: decimal, precision: 7, scale: 2, nullable: true}
+      - {name: active, type: boolean, true_values: ['Y'], false_values: ['N'], nullable: true}
+      - {name: business_date, type: date, datetime_pattern: yyyyMMdd, nullable: true}
+output:
+  - id: fixed_records
+    sql: SELECT * FROM records
+    format: fixed
+    path: out/records.dat
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_separator: lf, record_length: 33}
+    fields:
+      - {name: id, offset: 0, length: 4}
+      - {length: 1, fill_byte: 124} # FILLER: |
+      - {name: label, length: 10}
+      - {name: amount, length: 8, type: decimal, precision: 7, scale: 2}
+      - {name: active, length: 1, type: boolean, true_values: ['Y'], false_values: ['N']}
+      - {name: business_date, length: 8, type: date, datetime_pattern: yyyyMMdd}
+      - {length: 1, fill_byte: 124}

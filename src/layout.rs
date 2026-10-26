@@ -20,10 +20,19 @@ pub struct RecordLayout {
 }
 impl RecordLayout {
     pub fn compile(d: &Dataset, output: bool, result: Option<SchemaRef>) -> Result<Self> {
+        if d.format == Format::Parquet {
+            if d.compression.is_some() {
+                return Err(Error::config(
+                    "top-level compression is for csv/fixed/rdw; use parquet.compression for Parquet output",
+                ));
+            }
+            return crate::parquet_io::layout(d, output, result);
+        }
         let encoding = TextEncoding::resolve(&d.encoding)?;
         if (d.csv.is_some() && d.format != Format::Csv)
             || (d.fixed.is_some() && d.format != Format::Fixed)
             || (d.rdw.is_some() && d.format != Format::Rdw)
+            || d.parquet.is_some()
         {
             return Err(Error::config("format-specific block does not match format").context(&d.id));
         }
@@ -294,7 +303,7 @@ impl RecordLayout {
                             | DataType::FixedSizeBinary(_)
                     ),
                     IntLe | IntBe | UintLe | UintBe => t.is_integer(),
-                    FloatLe | FloatBe | HfpLe | HfpBe => {
+                    FloatLe | FloatBe | HfloatLe | HfloatBe => {
                         matches!(t, DataType::Float32 | DataType::Float64)
                     }
                     Filler => true,

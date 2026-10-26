@@ -1,0 +1,43 @@
+# job.yml の後に実行する。gzip と zstd の両方を読み戻して非圧縮CSVへ。
+input:
+  - import: csv.yml
+    id: csv_gzip
+    path: out/records.csv.gz
+    compression: gzip
+  - import: csv.yml
+    id: csv_zstd
+    path: out/records.csv.zst
+    compression: zstd
+  - import: fixed.yml
+    id: fixed_gzip
+    path: out/records.dat.gz
+    compression: gzip
+  - import: fixed.yml
+    id: fixed_zstd
+    path: out/records.dat.zst
+    compression: zstd
+output:
+  - id: csv_gzip_readback
+    format: csv
+    encoding: utf-8
+    path: out/csv_gzip.csv
+    mode: overwrite
+    sql: SELECT * FROM csv_gzip
+  - id: csv_zstd_readback
+    format: csv
+    encoding: utf-8
+    path: out/csv_zstd.csv
+    mode: overwrite
+    sql: SELECT * FROM csv_zstd
+  - id: fixed_gzip_readback
+    format: csv
+    encoding: utf-8
+    path: out/fixed_gzip.csv
+    mode: overwrite
+    sql: SELECT * FROM fixed_gzip
+  - id: fixed_zstd_readback
+    format: csv
+    encoding: utf-8
+    path: out/fixed_zstd.csv
+    mode: overwrite
+    sql: SELECT * FROM fixed_zstd

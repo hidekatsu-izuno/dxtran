@@ -1,0 +1,14 @@
+input:
+  - id: records
+    format: fixed
+    path: data/short.dat
+    encoding: utf-8
+    fixed: {record_separator: none, record_length: 4}
+    fields: [{name: value, length: 4}]
+output:
+  - id: result
+    sql: SELECT * FROM records
+    format: csv
+    path: out/short.csv
+    mode: overwrite
+    encoding: utf-8

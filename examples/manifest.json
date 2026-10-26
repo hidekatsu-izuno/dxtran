@@ -1,0 +1,257 @@
+[
+  {
+    "directory": "csv_to_csv",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/canonical.csv": "expected/canonical.csv",
+          "out/records.tsv": "expected/records.tsv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "csv_to_fixed",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.dat": "expected/records.dat"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/readback.csv": "expected/readback.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "fixed_to_csv",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/sales.csv": "expected/sales.csv",
+          "out/sales_cp932.tsv": "expected/sales_cp932.tsv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "fixed_to_fixed",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/names_utf16.dat": "expected/names_utf16.dat",
+          "out/names_utf8.dat": "expected/names_utf8.dat"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/readback.csv": "expected/readback.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "csv_dialects",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/names_utf16.tsv": "expected/names_utf16.tsv",
+          "out/names_jis.csv": "expected/names_jis.csv"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/utf16_readback.csv": "expected/readback.csv",
+          "out/jis_readback.csv": "expected/readback.csv",
+          "out/bom_readback.csv": "expected/readback.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "binary_fields",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.csv": "expected/records.csv",
+          "out/copy.bin": "expected/copy.bin",
+          "out/flags_lsb.bin": "expected/flags_lsb.bin"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "csv_to_binary",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.bin": "expected/records.bin"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/readback.csv": "expected/readback.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "null_defaults",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/defaults.bin": "expected/defaults.bin",
+          "out/mixed_flags.bin": "expected/mixed_flags.bin"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "datetime",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/events.dat": "expected/events.dat",
+          "out/events_utc.csv": "expected/events_utc.csv"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/readback.csv": "expected/readback.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "join_aggregate",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/detail.csv": "expected/detail.csv",
+          "out/totals.dat": "expected/totals.dat"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "empty",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/header_only.csv": "expected/header_only.csv",
+          "out/empty.dat": "expected/empty.dat",
+          "out/no_header.csv": "expected/no_header.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "parquet",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "produced": [
+          "out/records.parquet"
+        ]
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/readback.csv": "expected/readback.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "compression",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "produced": [
+          "out/records.csv.gz",
+          "out/records.csv.zst",
+          "out/records.dat.gz",
+          "out/records.dat.zst"
+        ]
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/csv_gzip.csv": "expected/csv.csv",
+          "out/csv_zstd.csv": "expected/csv.csv",
+          "out/fixed_gzip.csv": "expected/fixed.csv",
+          "out/fixed_zstd.csv": "expected/fixed.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "errors",
+    "jobs": [
+      {
+        "file": "malformed_csv.yml",
+        "exit_code": 3,
+        "scan_exit_code": 3,
+        "diagnostic": "unclosed CSV quote",
+        "absent": [
+          "out/malformed.csv"
+        ]
+      },
+      {
+        "file": "short_fixed.yml",
+        "exit_code": 3,
+        "scan_exit_code": 3,
+        "diagnostic": "truncated record",
+        "absent": [
+          "out/short.csv"
+        ]
+      },
+      {
+        "file": "width_overflow.yml",
+        "exit_code": 5,
+        "scan_exit_code": 0,
+        "diagnostic": "exceeds field width",
+        "absent": [
+          "out/first.csv",
+          "out/too_narrow.dat"
+        ]
+      },
+      {
+        "file": "precision_loss.yml",
+        "exit_code": 5,
+        "scan_exit_code": 0,
+        "diagnostic": "scale would lose nonzero digits",
+        "absent": [
+          "out/precision.dat"
+        ]
+      },
+      {
+        "file": "unrepresentable.yml",
+        "exit_code": 5,
+        "scan_exit_code": 0,
+        "diagnostic": "character cannot be represented",
+        "absent": [
+          "out/cp932.csv"
+        ]
+      }
+    ]
+  }
+]

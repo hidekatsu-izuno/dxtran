@@ -1,0 +1,13 @@
+input:
+  - id: records
+    format: csv
+    path: data/unicode.csv
+    encoding: utf-8
+    fields: [{name: value}]
+output:
+  - id: result
+    sql: SELECT * FROM records
+    format: csv
+    path: out/cp932.csv
+    mode: overwrite
+    encoding: cp932

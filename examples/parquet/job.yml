@@ -1,0 +1,18 @@
+# CSV の論理型・NULL・空文字を Parquet に保存する。
+input:
+  - id: records
+    format: csv
+    path: data/records.csv
+    encoding: utf-8
+    fields:
+      - {name: id}
+      - {name: memo, nullable: true}
+      - {name: amount, type: decimal, precision: 8, scale: 2}
+      - {name: payload, type: binary, nullable: true}
+output:
+  - id: archive
+    format: parquet
+    path: out/records.parquet
+    mode: overwrite
+    sql: SELECT * FROM records
+    parquet: {compression: zstd, row_group_size: 8192}

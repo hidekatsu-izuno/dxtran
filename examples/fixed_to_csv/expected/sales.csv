@@ -1,0 +1,4 @@
+id,customer,amount,status,note
+0002,東京,123.45,A,
+0001,大阪,-0.50,A,
+0003,名古屋,0.00,I,OK

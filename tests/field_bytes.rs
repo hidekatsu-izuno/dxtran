@@ -172,9 +172,9 @@ fn all_23_types_have_independent_expected_bytes_and_null_defaults() {
         ("uint-be", 2, "0102", "0000"),
         ("float-le", 4, "0000803f", "00000000"),
         ("float-be", 8, "3ff0000000000000", "0000000000000000"),
-        ("hfp-le", 8, "0000000000001041", "0000000000000000"),
+        ("hfloat-le", 8, "0000000000001041", "0000000000000000"),
         (
-            "hfp-be",
+            "hfloat-be",
             16,
             "41100000000000003300000000000000",
             "00000000000000000000000000000000",
@@ -211,7 +211,7 @@ fn all_23_types_have_independent_expected_bytes_and_null_defaults() {
             FieldType::IntLe | FieldType::IntBe => vec![ScalarValue::Int64(Some(-2))],
             FieldType::UintLe | FieldType::UintBe => vec![ScalarValue::UInt64(Some(258))],
             FieldType::FloatLe => vec![ScalarValue::Float32(Some(1.0))],
-            FieldType::FloatBe | FieldType::HfpLe | FieldType::HfpBe => {
+            FieldType::FloatBe | FieldType::HfloatLe | FieldType::HfloatBe => {
                 vec![ScalarValue::Float64(Some(1.0))]
             }
             FieldType::Date => vec![ScalarValue::Date32(Some(20751))],

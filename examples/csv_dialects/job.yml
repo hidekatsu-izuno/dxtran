@@ -1,0 +1,24 @@
+# ヘッダーなし、セミコロン区切り、単一引用符、CP932。
+input:
+  - id: names
+    format: csv
+    path: data/names.csv
+    encoding: cp932
+    csv: {header: false, delimiter: ';', quote: "'"}
+    fields:
+      - {name: id}
+      - {name: label}
+output:
+  - id: utf16
+    sql: SELECT * FROM names
+    format: csv
+    path: out/names_utf16.tsv
+    mode: overwrite
+    encoding: utf-16le
+    csv: {delimiter: "\t", line_ending: crlf}
+  - id: jis
+    sql: SELECT * FROM names
+    format: csv
+    path: out/names_jis.csv
+    mode: overwrite
+    encoding: iso-2022-jp

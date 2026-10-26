@@ -1,67 +1,53 @@
 use crate::error::{Error, Result};
 use std::{
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
 };
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::Relaxed)
-}
-#[cfg(unix)]
-extern "C" fn signal_handler(_: libc::c_int) {
-    INTERRUPTED.store(true, Ordering::Relaxed);
 }
 pub struct Signals {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     #[cfg(unix)]
-    previous: Vec<(libc::c_int, libc::sigaction)>,
+    registrations: Vec<signal_hook::SigId>,
 }
 impl Signals {
     pub fn new() -> Result<(Self, tokio::sync::oneshot::Receiver<()>)> {
         INTERRUPTED.store(false, Ordering::Relaxed);
+        let mut signals = Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            #[cfg(unix)]
+            registrations: vec![],
+        };
         #[cfg(unix)]
-        let mut previous = vec![];
-        #[cfg(unix)]
-        for signal in [libc::SIGINT, libc::SIGTERM] {
-            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-            action.sa_sigaction = signal_handler as *const () as usize;
-            action.sa_flags = libc::SA_RESTART;
-            let mut old = std::mem::MaybeUninit::uninit();
-            if unsafe {
-                libc::sigemptyset(&mut action.sa_mask);
-                libc::sigaction(signal, &action, old.as_mut_ptr())
-            } != 0
-            {
-                return Err(Error::sql(std::io::Error::last_os_error().to_string()));
-            }
-            previous.push((signal, unsafe { old.assume_init() }));
+        for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+            let registration = signal_hook::flag::register(signal, Arc::clone(&INTERRUPTED))
+                .map_err(|e| Error::sql(e.to_string()))?;
+            signals.registrations.push(registration);
         }
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = stop.clone();
+        let stopped = signals.stop.clone();
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        let thread = std::thread::spawn(move || {
-            while !stopped.load(Ordering::Relaxed) {
-                if INTERRUPTED.load(Ordering::Relaxed) {
-                    let _ = sender.send(());
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        });
-        Ok((
-            Self {
-                stop,
-                thread: Some(thread),
-                #[cfg(unix)]
-                previous,
-            },
-            receiver,
-        ))
+        signals.thread = Some(
+            std::thread::Builder::new()
+                .spawn(move || {
+                    while !stopped.load(Ordering::Relaxed) {
+                        if INTERRUPTED.load(Ordering::Relaxed) {
+                            let _ = sender.send(());
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                })
+                .map_err(|e| Error::sql(e.to_string()))?,
+        );
+        Ok((signals, receiver))
     }
 }
 impl Drop for Signals {
@@ -70,11 +56,10 @@ impl Drop for Signals {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        // At CLI shutdown, remove our actions; signal-hook keeps its OS handlers installed.
         #[cfg(unix)]
-        for (signal, old) in &self.previous {
-            unsafe {
-                libc::sigaction(*signal, old, std::ptr::null_mut());
-            }
+        for registration in self.registrations.drain(..) {
+            signal_hook::low_level::unregister(registration);
         }
     }
 }

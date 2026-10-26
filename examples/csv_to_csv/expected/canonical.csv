@@ -1,0 +1,6 @@
+id,memo,amount,active,business_date,payload
+0002,"comma,quote""",12.30,true,2026-10-26,00ff
+0001,"",-0.50,false,2024-02-29,""
+0003,,0.00,true,1970-01-01,
+0004,"line
+break",1.25,false,2069-12-31,aabb
