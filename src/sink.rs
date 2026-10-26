@@ -1,3 +1,4 @@
+mod csv;
 mod physical;
 use crate::{
     config::{Dataset, Format, Job},
@@ -6,6 +7,7 @@ use crate::{
     framing,
     layout::RecordLayout,
 };
+pub(crate) use csv::CsvEncoder;
 use datafusion::{
     arrow::{
         array::{Array, AsArray},
@@ -33,12 +35,8 @@ pub struct OutputSink {
     layout: RecordLayout,
     writer: Writer,
     pub rows: u64,
-    indices: Vec<Vec<usize>>,
-    delimiter: char,
-    quote: char,
-    line_ending: &'static str,
     physical: Option<Arc<PhysicalEncoder>>,
-    quote_always: Vec<bool>,
+    csv: Option<Arc<CsvEncoder>>,
     csv_buffer: String,
 }
 pub fn csv_cell(value: Option<&str>, always: bool, delimiter: char, quote: char) -> String {
@@ -132,17 +130,24 @@ impl OutputSink {
             .iter()
             .map(|f| f.spec.quote_style.as_deref().or(csv.quote_style.as_deref()) == Some("always"))
             .collect();
+        let encoder = (dataset.format == Format::Csv).then(|| {
+            Arc::new(CsvEncoder {
+                id: dataset.id.clone(),
+                layout: layout.clone(),
+                indices,
+                delimiter,
+                quote,
+                line_ending,
+                quote_always,
+            })
+        });
         let mut sink = Self {
             dataset: dataset.clone(),
             layout: layout.clone(),
             writer,
             rows: 0,
-            indices,
-            delimiter,
-            quote,
-            line_ending,
             physical,
-            quote_always,
+            csv: encoder,
             csv_buffer: String::new(),
         };
         if dataset.format == Format::Csv && csv.header {
@@ -188,76 +193,43 @@ impl OutputSink {
         if let (Some(encoder), Writer::Physical(writer)) = (&self.physical, &mut self.writer) {
             return encoder.write_batch(&batch, writer, &mut self.rows, None);
         }
-        let mut text = String::new();
-        for row in 0..batch.num_rows() {
-            for (field_no, (f, indices)) in self.layout.fields.iter().zip(&self.indices).enumerate()
-            {
-                if field_no > 0 {
-                    self.csv_buffer.push(self.delimiter);
-                }
-                let result = (|| -> Result<()> {
-                    let column = batch.column(indices[0]);
-                    if column.is_null(row) {
-                        if f.spec.nullable != Some(true) {
-                            return Err(Error::output("NULL in non-nullable CSV output"));
-                        }
-                        return Ok(());
-                    }
-                    text.clear();
-                    let value = match column.data_type() {
-                        DataType::Utf8 => column.as_string::<i32>().value(row),
-                        DataType::LargeUtf8 => column.as_string::<i64>().value(row),
-                        DataType::Utf8View => column.as_string_view().value(row),
-                        DataType::Decimal128(_, scale) => {
-                            let value = column.as_primitive::<Decimal128Type>().value(row);
-                            let value =
-                                crate::field::rescale(value, *scale as i32, f.scale as i32)?;
-                            crate::field::check_precision(value, f.precision)?;
-                            crate::field::decimal_text_into(value, f.scale, &mut text);
-                            &text
-                        }
-                        _ => {
-                            let value =
-                                ScalarValue::try_from_array(column, row).map_err(Error::from)?;
-                            text = f.format_text(&value)?;
-                            &text
-                        }
-                    };
-                    append_csv_cell(
-                        &mut self.csv_buffer,
-                        value,
-                        self.quote_always[field_no],
-                        self.delimiter,
-                        self.quote,
-                    );
-                    Ok(())
-                })();
-                result.map_err(|e| {
-                    e.context(format!(
-                        "output {} record {} column {} expected {:?} width {:?}",
-                        self.dataset.id,
-                        self.rows + 1,
-                        f.spec.name.as_deref().unwrap_or("FILLER"),
-                        f.kind,
-                        f.length
-                    ))
-                })?;
-            }
-            self.csv_buffer.push_str(self.line_ending);
-            if self.csv_buffer.len() >= 64 * 1024 {
-                self.flush_csv()?;
-            }
-            self.rows += 1;
-        }
-        self.flush_csv()?;
-        Ok(())
-    }
-    fn flush_csv(&mut self) -> Result<()> {
+        let encoder = self.csv.as_ref().expect("CSV encoder");
         let Writer::Csv(writer) = &mut self.writer else {
             unreachable!()
         };
-        writer.text(&self.csv_buffer)?;
-        self.csv_buffer.clear();
+        let start_row = self.rows;
+        let mut offset = 0;
+        while offset < batch.num_rows() {
+            let next = encoder.encode(
+                &batch,
+                offset,
+                start_row,
+                &mut self.csv_buffer,
+                64 * 1024,
+                None,
+            )?;
+            writer.text(&self.csv_buffer)?;
+            self.csv_buffer.clear();
+            self.rows += (next - offset) as u64;
+            offset = next;
+        }
+        Ok(())
+    }
+    pub(crate) fn csv_encoder(&self) -> Option<Arc<CsvEncoder>> {
+        self.csv
+            .as_ref()
+            .filter(|_| crate::parallel::worthwhile(&self.layout))
+            .cloned()
+    }
+    pub(crate) fn csv_writer_uses_cpu(&self) -> bool {
+        self.is_compressed() || self.layout.encoding.0 != encoding_rs::UTF_8
+    }
+    pub(crate) fn write_csv_text(&mut self, text: &str, rows: usize) -> Result<()> {
+        let Writer::Csv(writer) = &mut self.writer else {
+            unreachable!()
+        };
+        writer.text(text)?;
+        self.rows += rows as u64;
         Ok(())
     }
     pub(crate) fn fixed_encoder(&self) -> Option<Arc<PhysicalEncoder>> {

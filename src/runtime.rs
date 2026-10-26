@@ -1,4 +1,5 @@
 mod cooperative;
+mod csv;
 mod fixed;
 mod signals;
 use crate::{
@@ -285,6 +286,10 @@ async fn execute(cli: Cli, run_id: &str) -> Result<()> {
         let workers = crate::parallel::workers(resources.threads, resources.memory_limit);
         if let Some(encoder) = sink.fixed_encoder().filter(|_| workers > 1) {
             sink = fixed::write(sink, stream, encoder, conversion_budget.clone(), workers)
+                .await
+                .map_err(|e| e.context(format!("output {}", d.id)))?;
+        } else if let Some(encoder) = sink.csv_encoder().filter(|_| workers > 1) {
+            sink = csv::write(sink, stream, encoder, conversion_budget.clone(), workers)
                 .await
                 .map_err(|e| e.context(format!("output {}", d.id)))?;
         } else {

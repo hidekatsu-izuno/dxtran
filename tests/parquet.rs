@@ -163,6 +163,86 @@ fn copy_job(sql: &str) -> Value {
 }
 
 #[test]
+fn parallel_parquet_streams_large_groups_and_cancels_at_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    // Each group spans several batches; the last group is partial.
+    let batch = native_batch(75001);
+    let path = dir.path().join("in.parquet");
+    let mut writer = ArrowWriter::try_new(
+        File::create(&path).unwrap(),
+        batch.schema(),
+        Some(
+            WriterProperties::builder()
+                .set_max_row_group_row_count(Some(20000))
+                .set_compression(Compression::ZSTD(Default::default()))
+                .build(),
+        ),
+    )
+    .unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    for sql in [
+        "SELECT * FROM data",
+        "SELECT * FROM data LIMIT 0",
+        "SELECT * FROM data LIMIT 7 OFFSET 19997",
+    ] {
+        let job = copy_job(sql);
+        ok(invoke(dir.path(), &job, "run", false, 1));
+        let expected = read(&dir.path().join("out.parquet"));
+        for threads in [2, 4, 8] {
+            ok(invoke(dir.path(), &job, "run", false, threads));
+            assert_eq!(read(&dir.path().join("out.parquet")), expected);
+            assert_eq!(fs::read_dir(dir.path().join("tmp")).unwrap().count(), 0);
+        }
+    }
+    // Corruption in an unselected column of a later group is still an error.
+    let metadata = ParquetRecordBatchReaderBuilder::try_new(File::open(&path).unwrap()).unwrap();
+    let column = metadata.metadata().row_group(1).column(1);
+    let offset = column
+        .dictionary_page_offset()
+        .unwrap_or(column.data_page_offset()) as usize;
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[offset..offset + 16].fill(0xff);
+    fs::write(&path, bytes).unwrap();
+    let mut job = copy_job("SELECT n FROM data");
+    job["output"][0] = json!({"id":"result","path":"out.csv","format":"csv","encoding":"utf-8",
+        "mode":"overwrite","sql":"SELECT n FROM data"});
+    for threads in [1, 4, 8] {
+        fs::write(dir.path().join("out.csv"), b"previous").unwrap();
+        let result = invoke(dir.path(), &job, "run", false, threads);
+        assert_eq!(
+            result.status.code(),
+            Some(3),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(fs::read(dir.path().join("out.csv")).unwrap(), b"previous");
+        assert_eq!(fs::read_dir(dir.path().join("tmp")).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn parallel_parquet_preserves_output_bytes_at_memory_flush_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let strings =
+        StringArray::from_iter_values((0..10001).map(|n| format!("{n:08}{}", "x".repeat(2048))));
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "memo",
+        strings.data_type().clone(),
+        false,
+    )]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(strings)]).unwrap();
+    write(&dir.path().join("in.parquet"), &batch, true);
+    let mut job = copy_job("SELECT * FROM data");
+    job["output"][0]["parquet"] = json!({"compression":"uncompressed","row_group_size":65536});
+    ok(invoke(dir.path(), &job, "run", false, 1));
+    let expected = fs::read(dir.path().join("out.parquet")).unwrap();
+    ok(invoke(dir.path(), &job, "run", false, 4));
+    assert!(fs::read(dir.path().join("out.parquet")).unwrap() == expected);
+    assert_eq!(read(&dir.path().join("out.parquet")), batch);
+}
+
+#[test]
 fn parquet_preserves_types_nulls_and_order_across_row_groups() {
     let dir = tempfile::tempdir().unwrap();
     let batch = native_batch(24001);

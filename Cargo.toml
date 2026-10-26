@@ -10,6 +10,10 @@ description = "Deterministic SQL batch conversion for CSV, fixed, RDW and Parque
 name = "dxt"
 path = "src/main.rs"
 
+[[example]]
+name = "parquet_fixture"
+path = "benchmarks/parquet_fixture.rs"
+
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22"

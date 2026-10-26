@@ -1,5 +1,21 @@
 # 入出力の性能比較
 
+改善後の固定長ファイルの単純READ/WRITEに対する時間差・倍率は [docs/benchmark.md](../docs/benchmark.md) を参照してください。
+
+## Parquet入力・CSV変換の並列化
+
+[並列化の測定結果](PARALLEL_FORMATS.md)と[全試行のデータ](results/parallel-formats-comparison-256mib.json)を保存しています。
+
+```sh
+python3 -B benchmarks/parallel_formats.py --size-mib 256 --threads 1 4 8 --repeats 5 \
+  --compare-dxt /path/to/before/dxt \
+  --result benchmarks/results/parallel-formats-comparison-256mib.json
+```
+
+Rust製の `parquet_fixture` exampleで、行ごとに値が異なる文字列8項目＋Decimal128 8項目のCSVとParquetを作ります。CSV換算で1行256バイトです。ParquetはSnappy・8,192行グループとZstd・65,536行グループを使用します。各入力の全件CSV出力と、数値8列のSUM集計を比較し、入力中心の処理とCSV出力を含む処理を分けて評価します。SUMでも使用しない文字列列を含め全列をデコードします。
+
+出力は、dxtを使わず生成したCSVのサイズ・SHA-256、またはPythonで独立計算した集計値と毎回照合します。測定はウォームキャッシュでCLI起動から同期・公開・終了までを含め、順番をシャッフルします。CPU時間、最大RSS、spill、実行計画、入力・バイナリのハッシュも記録します。入力データ作成・出力検証は計測対象外です。全結果の転送速度はCSV換算で、Parquetファイル自体のディスク帯域とは異なります。
+
 ## CSV
 
 [CSV 高速化の測定結果](CSV.md)と[全試行のデータ](results/csv-comparison-256mib.json)を保存しています。

@@ -1,5 +1,7 @@
 mod csv;
 mod fixed;
+mod parallel_csv;
+mod parquet;
 pub use csv::CsvReader;
 use csv::CsvRecord;
 
@@ -678,6 +680,15 @@ impl ExecutionPlan for SourceExec {
         let workers = crate::parallel::workers(context.session_config().target_partitions(), limit);
         if workers > 1 && fixed::eligible(&self.source)? {
             return fixed::stream(self.source.clone(), self.projection.clone(), workers);
+        }
+        if workers > 1 && self.source.dataset.format == Format::Parquet {
+            return parquet::stream(self.source.clone(), self.projection.clone(), workers);
+        }
+        if workers > 1
+            && self.source.dataset.format == Format::Csv
+            && crate::parallel::worthwhile(&self.source.layout)
+        {
+            return parallel_csv::stream(self.source.clone(), self.projection.clone(), workers);
         }
         let source = self.source.clone();
         let projection = self.projection.clone();

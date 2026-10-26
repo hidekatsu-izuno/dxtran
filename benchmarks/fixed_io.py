@@ -43,6 +43,9 @@ def main():
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--result", type=Path, default=ROOT / "benchmarks/results/fixed-io.json")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--skip-codec", action="store_true", help="compare raw I/O and dxt only")
+    parser.add_argument("--cases", nargs="+", help="run only these case names")
+    parser.add_argument("--pause-ms", type=int, default=0, help="idle between trials, outside measured time")
     parser.add_argument("--compare-dxt", type=Path, help="also run a saved pre-change release dxt")
     parser.add_argument("--compare-codec", type=Path, help="also run a saved pre-change codec example")
     args = parser.parse_args()
@@ -50,12 +53,21 @@ def main():
         parser.error("size/repeats must be positive and warmups nonnegative")
     if any(n < 1 for n in args.threads) or len(set(args.threads)) != len(args.threads):
         parser.error("threads must be distinct positive integers")
+    if args.skip_codec and args.compare_codec:
+        parser.error("--compare-codec cannot be combined with --skip-codec")
+    if args.pause_ms < 0:
+        parser.error("pause-ms must be nonnegative")
     release = ROOT / "target/release"
     baseline = release / "fixed-copy-baseline"
     if not args.skip_build:
-        subprocess.run(["cargo", "build", "--release", "--locked", "--bin", "dxt", "--example", "fixed_codec_copy", "-j", "3"], cwd=ROOT, check=True)
+        command = ["cargo", "build", "--release", "--locked", "--offline", "--bin", "dxt", "-j", "3"]
+        if not args.skip_codec:
+            command += ["--example", "fixed_codec_copy"]
+        subprocess.run(command, cwd=ROOT, check=True)
     subprocess.run(["rustc", "--edition=2024", "-C", "opt-level=3", str(ROOT / "benchmarks/fixed_copy.rs"), "-o", str(baseline)], check=True)
-    binaries = {"dxt": release / "dxt", "codec": release / "examples/fixed_codec_copy"}
+    binaries = {"dxt": release / "dxt"}
+    if not args.skip_codec:
+        binaries["codec"] = release / "examples/fixed_codec_copy"
     comparisons = {name: path.resolve() for name, path in
                    (("dxt", args.compare_dxt), ("codec", args.compare_codec)) if path}
     for path in [*binaries.values(), *comparisons.values()]:
@@ -100,26 +112,34 @@ def main():
         cases = {"block_copy_1mib": [str(baseline), "block", str(input_path), str(output_path), str(stage)],
                  "record_copy_256b": [str(baseline), "record", str(input_path), str(output_path), str(stage)]}
         for layout, job in jobs.items():
-            cases[f"codecs_{layout}"] = [str(binaries["codec"]), str(job), str(stage)]
+            if not args.skip_codec:
+                cases[f"codecs_{layout}"] = [str(binaries["codec"]), str(job), str(stage)]
             if "codec" in comparisons:
                 cases[f"before_codecs_{layout}"] = [str(comparisons["codec"]), str(job), str(stage)]
             for threads in args.threads:
                 cases[f"dxt_{layout}_threads_{threads}"] = [str(binaries["dxt"]), "run", str(job), "--threads", str(threads), "--memory-limit", "512MiB", "--temp-dir", str(stages)]
                 if "dxt" in comparisons:
                     cases[f"before_dxt_{layout}_threads_{threads}"] = [str(comparisons["dxt"]), *cases[f"dxt_{layout}_threads_{threads}"][1:]]
+        if args.cases:
+            if set(args.cases) - cases.keys():
+                parser.error(f"unknown cases: {sorted(set(args.cases) - cases.keys())}")
+            if "record_copy_256b" not in args.cases:
+                parser.error("cases must include record_copy_256b as the reference")
+            cases = {name: cases[name] for name in args.cases}
         plans = {}
         for layout, job in jobs.items():
             plans[layout] = subprocess.run([str(binaries["dxt"]), "explain", str(job)], check=True, text=True, capture_output=True).stdout
         results = {"environment": {"platform": platform.platform(), "cpu_count": os.cpu_count(), "affinity": sorted(os.sched_getaffinity(0)),
                                   "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
                                   "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
-                                  "dxt_sha256": digest(binaries["dxt"]), "codec_sha256": digest(binaries["codec"]), "baseline_sha256": digest(baseline),
+                                  "dxt_sha256": digest(binaries["dxt"]), "codec_sha256": digest(binaries["codec"]) if "codec" in binaries else None, "baseline_sha256": digest(baseline),
                                   "comparison_sha256": {name: digest(path) for name, path in comparisons.items()},
                                   "filesystem": subprocess.check_output(["stat", "-f", "-c", "%T", str(work)], text=True).strip(),
                                   "cpu_max": Path("/sys/fs/cgroup/cpu.max").read_text().strip(), "memory_max": Path("/sys/fs/cgroup/memory.max").read_text().strip()},
                    "settings": {"size_bytes": target_bytes, "record_bytes": RECORD_SIZE, "rows": target_bytes // RECORD_SIZE, "cache": args.cache,
-                                "repeats": args.repeats, "warmups": args.warmups, "threads": args.threads, "build_profile": "release", "fsync": True,
-                                "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "input_sha256": expected, "order_seed": 20261025},
+                                "repeats": args.repeats, "warmups": args.warmups, "threads": args.threads, "build_profile": "release", "fsync": True, "skip_codec": args.skip_codec,
+                                "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "input_sha256": expected, "order_seed": 20261025,
+                                "cases": list(cases), "pause_ms": args.pause_ms},
                    "plans": plans, "runs": [], "summary": {}}
         rng = random.Random(20261025)
         for phase, count in (("warmup", args.warmups), ("measured", args.repeats)):
@@ -147,6 +167,8 @@ def main():
                     results["runs"].append(record)
                     args.result.write_text(json.dumps(results, indent=2) + "\n")
                     print(f"{phase} {repetition+1}/{count} {name}: {elapsed:.3f}s {record['mib_per_s']:.1f} MiB/s RSS {metrics['max_rss_kib']/1024:.1f} MiB", flush=True)
+                    if args.pause_ms:
+                        time.sleep(args.pause_ms / 1000)
         for name in cases:
             samples = [r for r in results["runs"] if r["case"] == name and r["phase"] == "measured"]
             median = statistics.median(r["wall_s"] for r in samples)
@@ -156,6 +178,7 @@ def main():
         reference = results["summary"]["record_copy_256b"]["median_s"]
         for entry in results["summary"].values():
             entry["slowdown_vs_record_copy"] = entry["median_s"] / reference
+        assert digest(binaries["dxt"]) == results["environment"]["dxt_sha256"], "dxt changed during measurement"
         args.result.write_text(json.dumps(results, indent=2) + "\n")
         print(json.dumps(results["summary"], indent=2), flush=True)
         print(f"Results: {args.result}", flush=True)

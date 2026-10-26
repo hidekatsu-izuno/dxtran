@@ -3,8 +3,8 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct CsvRecord {
-    text: String,
-    ends: Vec<(usize, bool)>,
+    pub(super) text: String,
+    pub(super) ends: Vec<(usize, bool)>,
 }
 impl CsvRecord {
     pub(super) fn len(&self) -> usize {
