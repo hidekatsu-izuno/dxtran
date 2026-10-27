@@ -7,8 +7,9 @@ use std::{fs, io::Write};
 fn existing_permissions_survive_replacement_and_no_replace_is_exclusive() {
     let root = tempfile::tempdir().unwrap();
     let work = create_workspace(root.path(), "dxtran-test-").unwrap();
-    let dest = root.path().join("out");
-    let source = work.path().join("out");
+    // Exercise the Windows rename buffer with spaces and UTF-16 surrogate pairs.
+    let dest = root.path().join("出力 📄.csv");
+    let source = work.path().join("ステージ 📄.tmp");
     create_staging_file(&dest)
         .unwrap()
         .write_all(b"old")

@@ -108,9 +108,8 @@ pub fn identity(path: &Path) -> io::Result<(u64, u64)> {
         FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
     )?;
-    // SAFETY: The output struct is plain C data and the handle is live.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: info is writable and correctly sized.
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: The handle is live; info is writable and correctly sized.
     checked(unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) })?;
     Ok((
         u64::from(info.dwVolumeSerialNumber),
@@ -158,6 +157,24 @@ pub fn filesystem(path: &Path) -> io::Result<(u64, u64)> {
     Ok((u64::from(serial), 0))
 }
 
+/// Convert inherited ACEs in a local descriptor copy to explicit ACEs.
+///
+/// # Safety
+/// `acl` must point to a valid, exclusively writable ACL allocation that remains
+/// live for this call, including the entries following its header.
+unsafe fn clear_inherited_ace_flags(acl: *mut ACL) -> io::Result<()> {
+    // SAFETY: The caller guarantees that acl points to a live ACL header.
+    let count = unsafe { (*acl).AceCount };
+    for index in 0..u32::from(count) {
+        let mut ace = null_mut();
+        // SAFETY: acl is valid; ace is writable and GetAce checks the index.
+        checked(unsafe { GetAce(acl, index, &mut ace) })?;
+        // SAFETY: GetAce returned an entry in the caller's writable allocation.
+        unsafe { (*ace.cast::<ACE_HEADER>()).AceFlags &= !(INHERITED_ACE as u8) };
+    }
+    Ok(())
+}
+
 /// Effective owner/group/DACL and integrity label. The DACL is protected against inheritance
 /// from the staging directory or destination; the original access rules are retained.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,27 +210,21 @@ impl Security {
         let mut dacl = null_mut();
         let mut sacl = null_mut();
         let (mut present, mut defaulted) = (0, 0);
-        // SAFETY: GetSecurityInfo allocated a valid, writable descriptor. Mutations
-        // affect only this local copy, not the file. GetAce bounds-checks each index.
-        unsafe {
-            checked(GetSecurityDescriptorDacl(
-                descriptor.0,
-                &mut present,
-                &mut dacl,
-                &mut defaulted,
-            ))?;
-            if present == 0 || dacl.is_null() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "NULL output DACL is unsupported",
-                ));
-            }
-            for index in 0..u32::from((*dacl).AceCount) {
-                let mut ace = null_mut();
-                checked(GetAce(dacl, index, &mut ace))?;
-                (*(ace.cast::<ACE_HEADER>())).AceFlags &= !(INHERITED_ACE as u8);
-            }
-            checked(SetSecurityDescriptorControl(
+        // SAFETY: descriptor owns a valid descriptor; all output slots are writable.
+        checked(unsafe {
+            GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted)
+        })?;
+        if present == 0 || dacl.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "NULL output DACL is unsupported",
+            ));
+        }
+        // SAFETY: dacl belongs to our exclusively owned, writable descriptor copy.
+        unsafe { clear_inherited_ace_flags(dacl) }?;
+        // SAFETY: Only the live local descriptor is modified, not the file.
+        checked(unsafe {
+            SetSecurityDescriptorControl(
                 descriptor.0,
                 SE_DACL_PROTECTED
                     | SE_DACL_AUTO_INHERITED
@@ -221,20 +232,15 @@ impl Security {
                     | SE_SACL_AUTO_INHERITED
                     | SE_SACL_AUTO_INHERIT_REQ,
                 SE_DACL_PROTECTED,
-            ))?;
-            checked(GetSecurityDescriptorSacl(
-                descriptor.0,
-                &mut present,
-                &mut sacl,
-                &mut defaulted,
-            ))?;
-            if present != 0 && !sacl.is_null() {
-                for index in 0..u32::from((*sacl).AceCount) {
-                    let mut ace = null_mut();
-                    checked(GetAce(sacl, index, &mut ace))?;
-                    (*(ace.cast::<ACE_HEADER>())).AceFlags &= !(INHERITED_ACE as u8);
-                }
-            }
+            )
+        })?;
+        // SAFETY: descriptor remains live; all output slots are writable.
+        checked(unsafe {
+            GetSecurityDescriptorSacl(descriptor.0, &mut present, &mut sacl, &mut defaulted)
+        })?;
+        if present != 0 && !sacl.is_null() {
+            // SAFETY: sacl belongs to the same exclusively owned descriptor copy.
+            unsafe { clear_inherited_ace_flags(sacl) }?;
         }
         let mut text = null_mut();
         let mut length = 0;
@@ -264,39 +270,30 @@ impl Security {
         let (mut owner, mut group, mut dacl, mut sacl) =
             (null_mut(), null_mut(), null_mut(), null_mut());
         let (mut present, mut defaulted) = (0, 0);
-        // SAFETY: descriptor owns all returned SID/ACL pointers until SetSecurityInfo returns.
-        unsafe {
-            checked(GetSecurityDescriptorOwner(
-                descriptor.0,
-                &mut owner,
-                &mut defaulted,
-            ))?;
-            checked(GetSecurityDescriptorGroup(
-                descriptor.0,
-                &mut group,
-                &mut defaulted,
-            ))?;
-            checked(GetSecurityDescriptorDacl(
-                descriptor.0,
-                &mut present,
-                &mut dacl,
-                &mut defaulted,
-            ))?;
-            checked(GetSecurityDescriptorSacl(
-                descriptor.0,
-                &mut present,
-                &mut sacl,
-                &mut defaulted,
-            ))?;
-            // No explicit label normally means both files use the default label.
-            // Do not request a NULL label update; verification rejects a staged
-            // label that differs from the original in this case.
-            let security = if sacl.is_null() {
-                SECURITY & !LABEL_SECURITY_INFORMATION
-            } else {
-                SECURITY
-            };
-            status(SetSecurityInfo(
+        // SAFETY: descriptor is valid; owner/defaulted are writable output slots.
+        checked(unsafe { GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut defaulted) })?;
+        // SAFETY: descriptor remains live; group/defaulted are writable output slots.
+        checked(unsafe { GetSecurityDescriptorGroup(descriptor.0, &mut group, &mut defaulted) })?;
+        // SAFETY: descriptor remains live; the DACL output slots are writable.
+        checked(unsafe {
+            GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted)
+        })?;
+        // SAFETY: descriptor remains live; the SACL output slots are writable.
+        checked(unsafe {
+            GetSecurityDescriptorSacl(descriptor.0, &mut present, &mut sacl, &mut defaulted)
+        })?;
+        // No explicit label normally means both files use the default label.
+        // Do not request a NULL label update; verification rejects a staged
+        // label that differs from the original in this case.
+        let security = if sacl.is_null() {
+            SECURITY & !LABEL_SECURITY_INFORMATION
+        } else {
+            SECURITY
+        };
+        // SAFETY: The handle is live and descriptor owns every SID/ACL pointer
+        // until this synchronous call returns.
+        status(unsafe {
+            SetSecurityInfo(
                 file.as_raw_handle(),
                 SE_FILE_OBJECT,
                 security | PROTECTED_DACL_SECURITY_INFORMATION,
@@ -304,8 +301,8 @@ impl Security {
                 group,
                 dacl,
                 sacl,
-            ))?;
-        }
+            )
+        })?;
         if Self::from_file(file)? != *self {
             return Err(io::Error::other("output access rights were not preserved"));
         }
@@ -329,23 +326,45 @@ pub fn prepare(path: &Path, security: Option<&Security>) -> io::Result<File> {
 }
 pub fn publish(_: &Path, dest: &Path, overwrite: bool, file: &File) -> io::Result<()> {
     let name = wide(dest.as_os_str())?;
-    let bytes = offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
-    let mut storage = vec![0usize; bytes.div_ceil(size_of::<usize>())];
-    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    // SAFETY: storage is aligned for FILE_RENAME_INFO and includes its variable
-    // UTF-16 tail. The live exclusive handle owns DELETE access for rename.
-    unsafe {
-        (*info).Anonymous.ReplaceIfExists = overwrite;
-        (*info).RootDirectory = null_mut();
-        (*info).FileNameLength = ((name.len() - 1) * 2) as u32;
-        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
-        checked(SetFileInformationByHandle(
-            file.as_raw_handle(),
-            FileRenameInfo,
-            info.cast(),
-            bytes as u32,
-        ))
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename path is too long"))?;
+    let bytes = offset_of!(FILE_RENAME_INFO, FileName)
+        .checked_add(name_bytes)
+        .and_then(|bytes| u32::try_from(bytes).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename path is too long"))?;
+    let file_name_length = (name_bytes - size_of::<u16>()) as u32;
+    let capacity = (bytes as usize).max(size_of::<FILE_RENAME_INFO>());
+    let mut storage = vec![0usize; capacity.div_ceil(size_of::<usize>())];
+    let buffer = storage.as_mut_ptr();
+    {
+        // SAFETY: usize storage has FILE_RENAME_INFO's alignment and enough space
+        // for the header. Its zeroed bytes are valid for every field. This unique
+        // reference is used only here, before accessing the variable tail.
+        let info = unsafe { &mut *buffer.cast::<FILE_RENAME_INFO>() };
+        info.Anonymous.ReplaceIfExists = overwrite;
+        info.RootDirectory = null_mut();
+        info.FileNameLength = file_name_length;
     }
+    // SAFETY: The disjoint source and destination both hold name.len() UTF-16
+    // units. Derive the tail pointer from the entire allocation, not a reference
+    // to FILE_RENAME_INFO::FileName, which only describes one UTF-16 unit.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            buffer
+                .cast::<u8>()
+                .add(offset_of!(FILE_RENAME_INFO, FileName))
+                .cast::<u16>(),
+            name.len(),
+        );
+    }
+    // SAFETY: buffer contains the initialized header and variable tail for the
+    // supplied byte count; file is live and was opened with DELETE access.
+    checked(unsafe {
+        SetFileInformationByHandle(file.as_raw_handle(), FileRenameInfo, buffer.cast(), bytes)
+    })
 }
 pub fn sync_directory(_: &Path) -> io::Result<()> {
     // Windows has no unprivileged equivalent of Linux directory fsync. File
@@ -403,24 +422,25 @@ mod tests {
             let descriptor = Local(raw);
             let (mut control, mut revision) = (0, 0);
             let mut ace = null_mut();
-            // SAFETY: GetSecurityInfo returned a live descriptor owning these ACL pointers.
-            unsafe {
-                checked(GetSecurityDescriptorControl(
-                    descriptor.0,
-                    &mut control,
-                    &mut revision,
-                ))
-                .unwrap();
-                assert_eq!(control & SE_DACL_PROTECTED, 0);
-                assert!(!acl.is_null());
-                assert_eq!((*acl).AceCount, 1);
-                checked(GetAce(acl, 0, &mut ace)).unwrap();
-                let header = &*ace.cast::<ACE_HEADER>();
-                assert_eq!(header.AceType, 0); // ACCESS_ALLOWED_ACE_TYPE
-                assert_ne!(header.AceFlags & INHERITED_ACE as u8, 0);
-                let ace = &*ace.cast::<ACCESS_ALLOWED_ACE>();
-                assert_eq!(ace.Mask, FILE_ALL_ACCESS);
-            }
+            // SAFETY: descriptor is live; control/revision are writable output slots.
+            checked(unsafe {
+                GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision)
+            })
+            .unwrap();
+            assert_eq!(control & SE_DACL_PROTECTED, 0);
+            assert!(!acl.is_null());
+            // SAFETY: GetSecurityInfo returned a non-null ACL in the live descriptor.
+            let count = unsafe { (*acl).AceCount };
+            assert_eq!(count, 1);
+            // SAFETY: acl is valid and GetAce checks the index before returning an entry.
+            checked(unsafe { GetAce(acl, 0, &mut ace) }).unwrap();
+            // SAFETY: Every valid ACE starts with an ACE_HEADER; descriptor owns it.
+            let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+            assert_eq!(header.AceType, 0); // ACCESS_ALLOWED_ACE_TYPE
+            assert_ne!(header.AceFlags & INHERITED_ACE as u8, 0);
+            // SAFETY: The entry's type was verified as ACCESS_ALLOWED_ACE above.
+            let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+            assert_eq!(ace.Mask, FILE_ALL_ACCESS);
         }
     }
 
@@ -441,16 +461,14 @@ mod tests {
         let descriptor = Local::descriptor("S:(ML;;NW;;;LW)").unwrap();
         let mut sacl = null_mut();
         let (mut present, mut defaulted) = (0, 0);
-        // SAFETY: The descriptor owns the SACL until the synchronous setter returns.
-        unsafe {
-            checked(GetSecurityDescriptorSacl(
-                descriptor.0,
-                &mut present,
-                &mut sacl,
-                &mut defaulted,
-            ))
-            .unwrap();
-            status(SetSecurityInfo(
+        // SAFETY: descriptor is live and all output slots are writable.
+        checked(unsafe {
+            GetSecurityDescriptorSacl(descriptor.0, &mut present, &mut sacl, &mut defaulted)
+        })
+        .unwrap();
+        // SAFETY: The handle is live and descriptor owns the SACL for the call.
+        status(unsafe {
+            SetSecurityInfo(
                 file.as_raw_handle(),
                 SE_FILE_OBJECT,
                 LABEL_SECURITY_INFORMATION,
@@ -458,9 +476,9 @@ mod tests {
                 null_mut(),
                 null_mut(),
                 sacl,
-            ))
-            .unwrap();
-        }
+            )
+        })
+        .unwrap();
         drop(file);
         let original = Security::read(&dest).unwrap();
         assert!(original.sddl.contains("(ML;;NW;;;LW)"));

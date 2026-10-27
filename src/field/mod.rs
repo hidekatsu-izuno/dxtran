@@ -243,7 +243,7 @@ impl CompiledField {
     fn padded_into(&self, s: &str, output: &mut Vec<u8>) -> Result<()> {
         output.clear();
         // UTF-8 is stateless: pad directly without repeatedly encoding candidate strings.
-        if self.encoding.0 == encoding_rs::UTF_8 {
+        if self.encoding.is_utf8() {
             let width = self.length.unwrap_or(s.len());
             if s.len() > width {
                 return Err(Error::output("encoded string exceeds field width"));

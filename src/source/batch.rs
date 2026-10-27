@@ -136,13 +136,7 @@ pub(super) fn order_key(dataset: usize, record: u64) -> [u8; 32] {
 
 pub(super) fn field_extra_bound(field: &crate::field::CompiledField, width: usize) -> usize {
     match field.kind {
-        FieldType::String if field.encoding.0 == encoding_rs::UTF_8 => width,
-        FieldType::String => field
-            .encoding
-            .0
-            .new_decoder_without_bom_handling()
-            .max_utf8_buffer_length_without_replacement(width)
-            .unwrap_or(usize::MAX),
+        FieldType::String => field.encoding.max_utf8_length(width),
         FieldType::Binary => width,
         _ => 0,
     }

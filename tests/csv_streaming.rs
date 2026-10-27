@@ -152,7 +152,18 @@ fn csv_buffers_preserve_multiline_null_empty_and_encoding_state() {
     }
     // Each encoding passes multiple Arrow batches and output flush boundaries.
     // Input permits an omitted final separator; output emits the configured one.
-    for encoding in ["utf-8", "utf-16le", "utf-16be", "shift_jis", "iso-2022-jp"] {
+    for encoding in [
+        "utf-8",
+        "utf-16le",
+        "utf-16be",
+        "shift_jis",
+        "iso-2022-jp",
+        "cp930",
+        "cp939",
+        "cp942",
+        "cp942c",
+        "cp943c",
+    ] {
         let codec = TextEncoding::resolve(encoding).unwrap();
         fs::write(
             dir.path().join("in.csv"),

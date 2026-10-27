@@ -158,7 +158,7 @@ fn log_start(
         }
         let enc = crate::encoding::TextEncoding::resolve(&d.encoding)?;
         log(
-            json!({"event":"encoding","run_id":run_id,"definition":d.id,"label":d.encoding,"canonical":enc.0.name(),"output_encoding":if enc.0==encoding_rs::UTF_16LE || enc.0==encoding_rs::UTF_16BE {enc.0.name()}else{enc.0.output_encoding().name()}}),
+            json!({"event":"encoding","run_id":run_id,"definition":d.id,"label":d.encoding,"canonical":enc.name(),"output_encoding":enc.output_name()}),
         );
     }
     Ok(())

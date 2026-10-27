@@ -94,7 +94,7 @@ pub(crate) fn worthwhile(layout: &RecordLayout) -> bool {
     // A single plain UTF-8/string or binary field is mostly memory/I/O work.
     // Scheduling and buffering made that case slower in the fixed-I/O benchmark.
     !matches!(layout.fields.as_slice(), [field]
-        if (field.kind == FieldType::String && field.encoding.0 == encoding_rs::UTF_8
+        if (field.kind == FieldType::String && field.encoding.is_utf8()
             && field.spec.null_if_pattern.is_none()) || field.kind == FieldType::Binary)
 }
 

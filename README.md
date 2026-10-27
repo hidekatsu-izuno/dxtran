@@ -21,6 +21,8 @@ dxt run job.yml --input.sales.path=sales.csv --output.totals.path=totals.csv
 
 CSV・fixed・RDW の入力定義は全列の名前・型を指定します。CSV の未引用の空フィールドは NULL、引用した空フィールドは空文字です。`output.fields` の部分指定では SQL の列順を保ったまま書式を設定できます。fixed / RDW は全物理項目を定義し、隙間は名前のない FILLER で明示します。23種類の型、文字コード、ビット列、日時パターン、NULL 表現を共通のレイアウトで処理します。
 
+`encoding` は従来の UTF-8・CP932 等に加え、[jtc-utils](https://docs.rs/jtc-utils/0.1.0/jtc_utils/charset/) の `jef`、`x-fujitsu-ebcdic-ascii`、`x-fujitsu-ebcdic-kana`、`x-fujitsu-ebcdic-lower`、`cp930`、`cp939`、`cp942`、`cp942c`、`cp943c` に対応します。例えば IBM の漢字混在データは `encoding: cp939` と指定します。JEF は2バイトの漢字コード専用で、固定長・RDW の文字項目の埋め文字には `pad_char: "　"` を指定してください。CP930 / CP939 の文字項目は SO/SI を含む独立した文字列として扱い、`length` はシフト制御バイトを含むバイト数です。不正なバイト列と変換不能文字はエラーになります。[文字コードの詳細](docs/SPEC.md#65-encoding-の解決と文字コード変換)を参照してください。
+
 fixed / RDW の input/output では、項目に `when: "record_type = 'H'"` のような Boolean の SQL 式を指定し、レコード条件に応じて同じバイト領域を別の項目として扱えます。入力の条件式は `when` のない共通項目、出力の条件式は SQL の結果列を参照します。条件が TRUE の項目だけを読み書きし、非該当の入力列は NULL になります。`AND` / `OR` / `IN` / `IS NULL` やスカラー関数も利用できます。[ヘッダー・明細・トレーラーのサンプル](examples/conditional_records/job.yml)と[詳しい規則](docs/SPEC.md#711-レコード条件付き項目定義)を参照してください。
 
 すべての形式の input/output に `check` を指定できます。`when` の SQL 式が TRUE のレコードに対し、`error` はメッセージを標準エラーへ出して異常終了、`warn` は標準エラーへ出して継続、`info` は標準出力へ出して継続します。入力ではデコード後の全公開列、出力では SQL 結果の列を参照できます。複数のチェックは配列で指定し、記載順に実行します。メッセージは文字列のまま JSON ログに記録します。[継続・異常終了のサンプル](examples/checks/job.yml)を用意しています。

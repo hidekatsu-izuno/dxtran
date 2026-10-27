@@ -21,7 +21,7 @@ dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長、
 | 出力 | CSV、固定長、RDW 付き可変長、Parquet。Parquet は SQL 結果スキーマ、他の形式は YAML の項目定義を使用 |
 | 定義の再利用 | 任意の枝への `import` と利用側の値による上書き |
 | 行順 | 元ファイル順を既定とし、SQL の ORDER BY で変更可能 |
-| 文字コード | encoding_rs が認識する全ラベル・別名。明示指定し、自動判定しない |
+| 文字コード | encoding_rs と jtc-utils が認識する全ラベル・別名。明示指定し、自動判定しない |
 | レコードの境界 | 固定長は改行なし / LF / CRLF、可変長は RDW。幅・位置はすべてバイト単位 |
 | 項目の格納形式 | `type` に文字列・10進数・整数・IEEE / IBM HFP・ゾーン / パック10進数・真偽値・日付時刻・バイト列を指定 |
 | ビット項目 | n バイトの `bits` を読み、各ビットを名前付き Boolean 列として公開 |
@@ -179,7 +179,7 @@ output:
 | `format` | 必須 | `csv`、`fixed`、`rdw`、`parquet` |
 | `path` | 任意 | 入力ファイルのパス。省略時は CLI の `--input.<id>.path` で指定する |
 | `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。省略時は非圧縮。6.7節参照 |
-| `encoding` | parquet 以外で必須 | encoding_rs が認識する文字コードラベル。6.5節参照。parquet では指定不可 |
+| `encoding` | parquet 以外で必須 | encoding_rs と jtc-utils が認識する文字コードラベル。6.5節参照。parquet では指定不可 |
 | `fields` | parquet 以外で必須 | CSV は列名・type・NULL 許容、fixed / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
 | `check` | 任意 | レコード条件による異常終了・ログ出力。6.8節参照 |
 | `csv` | CSV で任意 | ヘッダー・区切り・引用符の設定 |
@@ -262,17 +262,29 @@ input:
 
 ### 6.5 encoding の解決と文字コード変換
 
-`encoding_rs::Encoding::for_label()` が認識する全ラベル・別名を受け付ける。大文字小文字や前後の ASCII 空白の扱いも同 API に従い、認識できない値は設定エラーとする。`utf-8`、`shift_jis`、`euc-jp`、`iso-2022-jp`、`gb18030`、`windows-1252`、`ibm866`、`utf-16le`、`utf-16be` 等を指定できる。既存例の `cp932` は dxtran 側の別名として `shift_jis` に解決する。ログには指定値と正規名を残す。[encoding_rs: Encoding](https://docs.rs/encoding_rs/latest/encoding_rs/struct.Encoding.html)
+`jtc_utils::charset::Charset::for_label()` が認識する全ラベル・別名を受け付ける。従来の `encoding_rs::Encoding::for_label()` が認識するラベルも引き続き利用できる。大文字小文字を区別せず、前後の ASCII 空白を除去し、認識できない値は設定エラーとする。`utf-8`、`shift_jis`、`euc-jp`、`iso-2022-jp`、`gb18030`、`windows-1252`、`ibm866`、`utf-16le`、`utf-16be` 等に加え、次のレガシー文字コードを指定できる。`cp932`・`windows-31j`・`windows31j` は従来どおり `shift_jis` に解決する。ログには指定値・正規名・実際の出力文字コードを残す。[jtc-utils: Charset](https://docs.rs/jtc-utils/0.1.0/jtc_utils/charset/enum.Charset.html)
+
+| ラベル | 文字コード・別名 |
+| --- | --- |
+| `jef` / `x-fujitsu-jef` | 富士通 JEF 漢字（正規名 `x-fujitsu-jef`） |
+| `x-fujitsu-ebcdic-ascii` | 富士通 EBCDIC ASCII |
+| `x-fujitsu-ebcdic-kana` | 富士通 EBCDIC カナ |
+| `x-fujitsu-ebcdic-lower` | 富士通 EBCDIC 英小文字 |
+| `cp930` / `cp939` | IBM EBCDIC + 漢字。`ibm930` / `ibm-930` 等も利用可 |
+| `cp942` / `cp942c` / `cp943c` | IBM 系 Shift_JIS 変種。`ibm942` / `ibm-942` 等も利用可。CP932 とは異なるマッピングを保持する |
 
 - CSV はファイル全体を同じデコーダーで逐次 UTF-8 に変換してから解析し、出力は CSV を組み立ててから同じエンコーダーで変換する。状態を持つ文字コードの状態をフィールドやバッファごとにリセットしない。
 - fixed / rdw はまずバイトでレコード・項目を切り出し、`string` / `decimal` / `boolean` / `date` / `time` / `timestamp` 項目を文字コード変換する。各文字項目は独立した文字列として状態を初期化・終端処理する。途中状態を隣の項目へ持ち越さない。
+- CP930 / CP939 は単バイト状態で開始し、SO/SI で漢字との切り替えを行う。出力の終端では必要な SI を出力する。固定長・RDW の `length` は SO/SI を含むバイト数で、シフト制御バイトは文字列値に含めない。
+- JEF は2バイトの漢字コードのみを扱い、ASCII や EBCDIC との混在形式は自動判別しない。補助面の漢字・結合濁点・外字 U+E000–U+EC1D を扱う。半角空白を表現できないため、固定長・RDW の文字項目には `pad_char: "　"`（全角空白）を明示する。JEF は CSV の ASCII 区切り文字や改行も表現できないため、通常は fixed / rdw で使用する。
+- レガシー文字コードの変換表にある非可逆な別名はそのまま適用する。例えば富士通 EBCDIC カナでは ASCII 英小文字を大文字へ変換する。表現可能な文字でも、再デコード後の Unicode が元と一致するとは限らない。
 - `binary` / `bits`、数値のバイナリ表現、ゾーン / パック10進数は、7節のバイト規則で処理する。ファイル全体を文字コード変換して数値領域を破壊しない。
 - 不正なバイト列と変換できない文字はエラーにし、代替文字や数値文字参照へ置換しない。[encoding_rs: Encoder](https://docs.rs/encoding_rs/latest/encoding_rs/struct.Encoder.html)
 - CSV は指定した UTF-8 / UTF-16LE / UTF-16BE と一致する先頭 BOM だけを除去する。BOM で指定文字コードを変更しない。不一致の BOM はエラー。出力は BOM を付けない。fixed / rdw は BOM の自動除去を行わず、バイト位置を維持する。
 - encoding_rs の UTF-16 エンコーダー要求は UTF-8 出力になるため、UTF-16LE / BE の出力は dxtran が `encode_utf16()` と指定したバイト順で実装する。指定した UTF-16 を UTF-8 で黙って出力しない。
 - `replacement` に解決されるラベルも認識対象とする。非空入力は厳密デコードのエラーになり、出力は encoding_rs の `output_encoding()` に従う UTF-8 とし、実際の出力文字コードをログに明示する。この特殊な文字コードに復元可能な固有バイト表現はない。[encoding_rs: UTF-16 and output encodings](https://docs.rs/encoding_rs/latest/encoding_rs/#utf-16le-utf-16be-and-unicode-encoding-schemes)
 
-対応集合と別名の意味は採用する encoding_rs の版とともに固定する。encoding_rs にない文字コードは受け付けない。例えば EBCDIC の文字列デコードはこの集合に含まれないが、数値の EBCDIC ゾーン表現は `zone: ebcdic` としてバイト処理できる。
+対応集合と別名の意味は encoding_rs 0.8.35 と jtc-utils 0.1.0 とともに固定する。これらにない文字コードは受け付けない。従来の標準文字コードの変換経路と `replacement` の出力規則は維持し、jtc-utils は追加のレガシー文字コードに使用する。数値の EBCDIC ゾーン表現は文字コード指定とは独立して `zone: ebcdic` で処理する。
 
 ### 6.6 Parquet のネイティブスキーマ
 
@@ -1239,7 +1251,7 @@ Linux は `renameat2`、Windows は `SetFileInformationByHandle(FileRenameInfo)`
 - ソート・結合・集計での spill 可否は採用バージョンと演算に依存する。メモリ・ディスク不足は明示的に失敗させ、ストリーム出力だけで全クエリが定数メモリになるとは仮定しない。[DataFusion: Configuration Settings](https://datafusion.apache.org/user-guide/configs.html)
 - SQL の LIMIT 等で読み込まれなかった行は検証されない。全入力の検査が必要な場合は `check --scan` を使う。
 
-DataFusion と encoding_rs の具体的なバージョンは実装開始時に選定して固定する。Arrow は DataFusion と互換のある同じ版を使い、異なるメジャーバージョンを重複導入しない。CLI 用途として `Cargo.lock` を管理し、選定版の MSRV に合わせて Rust ツールチェーンも固定する。
+DataFusion、encoding_rs、jtc-utils の具体的なバージョンを選定して固定する。Arrow は DataFusion と互換のある同じ版を使い、異なるメジャーバージョンを重複導入しない。CLI 用途として `Cargo.lock` を管理し、選定版の MSRV に合わせて Rust ツールチェーンも固定する。
 
 ## 14. CLI とエラー
 
@@ -1345,7 +1357,7 @@ src/
 1. 複数の input / process / output を実行できる。項目定義は全形式で input.fields / output.fields、fixed のレコード設定は fixed.record_length / fixed.record_separator に指定する。各 output は SQL を必須とし、列の選択・改名・論理型の変換・集計・並べ替え・件数制限を SQL で指定する。process: [] の場合も出力 SQL だけで処理でき、SELECT * FROM sales 等で形式変換できる。CSV の fields は列名で部分指定する出力設定とし、未指定列を含め全結果列を SQL の列順で出力する。fixed / rdw の fields は展開後の列名集合と一致し、書き出し設定が SQL の射影や型変換を代行しない。
 2. SQL から前方参照を含む DAG を作り、ローカル CTE のスコープを守る。循環や未定義列が書き込み前に検出される。
 3. CSV の未引用の空フィールドを NULL、`""` を長さ0の文字列として読み書きできる。quote_style は fields の項目別設定、csv の共通設定、necessary の順で解決し、SQL 結果型を引き継いだ項目やヘッダーにも適用できる。fields の未指定・部分指定・並び順を変えた場合も SQL の列順は変わらない。NULL は両方式で未引用、非 NULL の空文字・0バイト binary は引用した空フィールドとなる。異なる列設定、独自の delimiter / quote、数値等の書式化、引用状態、1列の空行、末尾空列、埋め込み改行、引用符の二重化をバッファ分割の前後でも保持し、NULL と空文字の往復が成立する。不明・重複した列名、不正な方式・指定先は設定エラーとする。
-4. encoding_rs の全ラベル・別名を解決できる。UTF-8、Shift_JIS、UTF-16LE / BE、ISO-2022-JP 等の入出力、BOM、状態・文字をまたぐバッファ分割、変換不能のエラーを検証する。UTF-16 出力を実際の UTF-16 バイト列で検証する。
+4. encoding_rs と jtc-utils の全ラベル・別名を解決できる。UTF-8、Shift_JIS、UTF-16LE / BE、ISO-2022-JP、JEF、富士通 EBCDIC、IBM CP930 / CP939 / CP942 / CP942C / CP943C の入出力、BOM、状態・文字をまたぐバッファ分割、変換不能のエラーを検証する。UTF-16 出力とレガシー文字コードを既知のバイト列で検証する。固定長・RDW のシフト状態の独立性、埋め文字、バイナリ数値の保持も検証する。
 5. `type` の全23種類について、独立した期待バイト列から読み書きできる。整数の符号拡張とバイト順、IEEE の4 / 8バイト、HFP の4 / 8 / BE16バイトと丸め、ゾーンの符号位置、packed / upacked / npacked の違いを検証する。
 6. 不適合な幅、不正な数字・ニブル・符号、短いレコード、整数・Decimal のあふれ、文字列の出力幅超過を黙って補正しない。fixed の区切りなし / LF / CRLF、末尾区切り省略、FILLER、マルチバイト文字の幅も検証する。
 7. 通常実行で全データを `collect()` せず、設定したメモリプールと有界バッファを使用する。メモリより大きいデータの走査と、spill 対応ソートを検証する。
@@ -1386,4 +1398,4 @@ src/
 
 ## 17. 将来の拡張
 
-encoding_rs の範囲外の文字コード、BDW / spanned record、その他のファイル形式、明示的な中間結果保存、オブジェクトストレージを、既存の入力・レイアウト・出力インターフェースへ追加する。複数出力の一括公開や不正行の隔離出力は、成功・失敗の意味が変わるため個別に仕様を定義する。
+encoding_rs と jtc-utils の範囲外の文字コード、BDW / spanned record、その他のファイル形式、明示的な中間結果保存、オブジェクトストレージを、既存の入力・レイアウト・出力インターフェースへ追加する。複数出力の一括公開や不正行の隔離出力は、成功・失敗の意味が変わるため個別に仕様を定義する。

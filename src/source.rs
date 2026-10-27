@@ -132,7 +132,7 @@ mod tests {
         for encoding in ["utf-8", "shift_jis", "utf-16le", "utf-16be", "iso-2022-jp"] {
             let encoding = crate::encoding::TextEncoding::resolve(encoding).unwrap();
             let data = encoding.encode("日本　").unwrap();
-            let config = json!({"format":"fixed","encoding":encoding.0.name(),"fixed":{"record_separator":"none"},"fields":[{"name":"text","length":data.len(),"pad_char":"　"}]});
+            let config = json!({"format":"fixed","encoding":encoding.name(),"fixed":{"record_separator":"none"},"fields":[{"name":"text","length":data.len(),"pad_char":"　"}]});
             let (_dir, mut reader, schema) = test_reader(config, &data);
             let batch = reader.next_batch(schema, Some(1)).unwrap().unwrap();
             assert_eq!(

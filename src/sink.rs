@@ -231,7 +231,7 @@ impl OutputSink {
             .cloned()
     }
     pub(crate) fn csv_writer_uses_cpu(&self) -> bool {
-        self.is_compressed() || self.layout.encoding.0 != encoding_rs::UTF_8
+        self.is_compressed() || !self.layout.encoding.is_utf8()
     }
     pub(crate) fn write_csv_text(&mut self, text: &str, rows: usize) -> Result<()> {
         let Writer::Csv(writer) = &mut self.writer else {

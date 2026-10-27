@@ -118,7 +118,7 @@ pub(crate) fn layout(d: &Dataset, result: Option<SchemaRef>) -> Result<RecordLay
         max_record_length: 0,
         format: Format::Parquet,
         // The record-layout encoding is unused for native Arrow storage.
-        encoding: TextEncoding(encoding_rs::UTF_8),
+        encoding: TextEncoding::UTF_8,
         conditional: None,
         checks: Default::default(),
     })
