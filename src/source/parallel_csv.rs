@@ -1,7 +1,23 @@
 //! Keep CSV/charset framing sequential; convert bounded parsed chunks in parallel.
-use super::*;
+use super::{
+    InputReader, SourceTable,
+    batch::{BatchColumn, BatchRow, RowSize, order_key},
+};
+use crate::field::ValueSink;
 use crate::parallel::{CancelOnDrop, check_cancelled};
+use crate::{
+    error::{Error, Result},
+    framing,
+};
+use datafusion::{
+    arrow::record_batch::{RecordBatch, RecordBatchOptions},
+    common::ScalarValue,
+    error::{DataFusionError, Result as DFResult},
+    physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter},
+};
 use futures::StreamExt;
+use futures::stream;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 struct Chunk {

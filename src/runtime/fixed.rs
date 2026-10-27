@@ -1,8 +1,14 @@
 //! Convert fixed output chunks in parallel and commit bytes in stream order.
-use super::*;
+use super::original_error;
+use crate::{
+    error::{Error, Result},
+    sink,
+};
 use crate::{parallel::CancelOnDrop, sink::PhysicalEncoder};
 use datafusion::{arrow::record_batch::RecordBatch, physical_plan::SendableRecordBatchStream};
+use futures::StreamExt;
 use futures::stream;
+use std::sync::Arc;
 
 pub(super) async fn write(
     sink: sink::OutputSink,

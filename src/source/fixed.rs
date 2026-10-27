@@ -1,7 +1,28 @@
 //! Decode disjoint fixed-record ranges concurrently, emitting them in file order.
-use super::*;
+use super::{
+    SourceTable,
+    batch::{BatchColumn, BatchRow, field_extra_bound, order_key},
+};
+use crate::field::ValueSink;
 use crate::parallel::{CancelOnDrop, check_cancelled};
+use crate::{
+    config::Format,
+    error::{Error, Result},
+    framing,
+};
+use datafusion::{
+    arrow::{
+        array::{BinaryBuilder, Decimal128Builder, StringBuilder},
+        datatypes::{DataType, SchemaRef},
+        record_batch::{RecordBatch, RecordBatchOptions},
+    },
+    common::ScalarValue,
+    error::{DataFusionError, Result as DFResult},
+    physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter},
+};
+use futures::stream;
 use futures::{StreamExt, TryStreamExt};
+use std::{fs::File, io::Read, sync::Arc};
 use std::{
     io::{Seek, SeekFrom},
     sync::atomic::AtomicBool,
@@ -93,11 +114,15 @@ impl FixedRanges {
             .map_err(|e| context(Error::input(e.to_string()), first + 1, offset))?;
         let capacity = raw.len().div_ceil(self.stride);
         let mut widths = Vec::new();
-        for field in &self.source.layout.fields {
-            widths.extend(std::iter::repeat_n(
-                field_extra_bound(field, field.length.unwrap_or(0)),
-                field.names().len(),
-            ));
+        if self.source.layout.conditional.is_some() {
+            widths.resize(self.source.layout.schema.fields().len(), 0);
+        } else {
+            for field in &self.source.layout.fields {
+                widths.extend(std::iter::repeat_n(
+                    field_extra_bound(field, field.length.unwrap_or(0)),
+                    field.names().len(),
+                ));
+            }
         }
         if self.source.order_name.is_some() {
             widths.push(32);
@@ -145,19 +170,10 @@ impl FixedRanges {
                 column: 0,
                 bytes: 0,
             };
-            for field in &self.source.layout.fields {
-                let width = field.length.expect("fixed field width");
-                field
-                    .decode_to(&body[field.offset..field.offset + width], &mut row)
-                    .map_err(|e| {
-                        fail(e.context(format!(
-                            "column {} offset {} width {}",
-                            field.spec.name.as_deref().unwrap_or("FILLER"),
-                            field.offset,
-                            width
-                        )))
-                    })?;
-            }
+            self.source
+                .layout
+                .decode_physical(body, &mut row)
+                .map_err(fail)?;
             if self.source.order_name.is_some() {
                 let key = order_key(self.source.dataset_no, number);
                 row.text(Some(std::str::from_utf8(&key).expect("ASCII order key")))?;

@@ -1,0 +1,7 @@
+id: records
+format: csv
+path: data/records.csv
+encoding: utf-8
+fields:
+  - {name: id}
+  - {name: amount, type: decimal, precision: 7, scale: 2, nullable: true}

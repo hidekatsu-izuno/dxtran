@@ -1,5 +1,10 @@
 //! Streaming CSV syntax with reusable record storage and bulk byte searches.
-use super::*;
+use super::Cell;
+use crate::{
+    error::{Error, Result},
+    framing,
+};
+use std::io::{BufRead, BufReader, Read};
 
 #[derive(Default)]
 pub(super) struct CsvRecord {

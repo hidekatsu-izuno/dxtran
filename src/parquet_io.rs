@@ -72,7 +72,8 @@ fn validate_names(schema: &Schema) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn layout(d: &Dataset, output: bool, result: Option<SchemaRef>) -> Result<RecordLayout> {
+pub(crate) fn layout(d: &Dataset, result: Option<SchemaRef>) -> Result<RecordLayout> {
+    let output = result.is_some();
     if !d.encoding.is_empty()
         || !d.fields.is_empty()
         || d.csv.is_some()
@@ -118,6 +119,8 @@ pub(crate) fn layout(d: &Dataset, output: bool, result: Option<SchemaRef>) -> Re
         format: Format::Parquet,
         // The record-layout encoding is unused for native Arrow storage.
         encoding: TextEncoding(encoding_rs::UTF_8),
+        conditional: None,
+        checks: Default::default(),
     })
 }
 

@@ -9,7 +9,7 @@ fn invoke(dir: &Path, command: &str, extra: &[&str]) -> Output {
         .arg(command)
         .arg(dir.join("job.yml"))
         .args(extra)
-        .current_dir("/")
+        .current_dir(std::env::temp_dir())
         .output()
         .unwrap()
 }

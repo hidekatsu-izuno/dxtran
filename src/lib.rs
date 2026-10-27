@@ -1,13 +1,17 @@
+mod check;
 mod compression;
 pub mod config;
 pub mod encoding;
 pub mod error;
 pub mod field;
+mod filesystem;
 pub mod framing;
 pub mod layout;
 mod parallel;
 mod parquet_io;
 pub mod planner;
+mod predicate;
+pub mod publication;
 pub mod runtime;
 pub mod sink;
 pub mod source;

@@ -1,7 +1,7 @@
 mod csv;
 mod physical;
 use crate::{
-    config::{Dataset, Format, Job},
+    config::{Dataset, Format},
     encoding::TextWriter,
     error::{Error, Result},
     framing,
@@ -18,10 +18,9 @@ use datafusion::{
 };
 pub(crate) use physical::PhysicalEncoder;
 use std::{
-    collections::BTreeSet,
-    fs::{self, File},
+    fs::File,
     io::{BufWriter, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
 };
 
@@ -75,10 +74,7 @@ impl OutputSink {
         path: &Path,
         result_schema: &datafusion::arrow::datatypes::Schema,
     ) -> Result<Self> {
-        let file = File::options()
-            .write(true)
-            .create_new(true)
-            .open(path)
+        let file = crate::filesystem::create_staging_file(path)
             .map_err(|e| Error::output(e.to_string()).context(path.display()))?;
         let csv = dataset.csv.clone().unwrap_or_default();
         let delimiter = csv.delimiter.chars().next().unwrap();
@@ -174,6 +170,19 @@ impl OutputSink {
         Ok(sink)
     }
     pub fn batch(&mut self, batch: RecordBatch) -> Result<()> {
+        if self.layout.checks.is_empty() {
+            return self.write_batch(batch);
+        }
+        // A check and the value conversion for one record finish before the
+        // next record's messages can be emitted.
+        for row in 0..batch.num_rows() {
+            let record = batch.slice(row, 1);
+            self.layout.checks.batch(&record, self.rows)?;
+            self.write_batch(record)?;
+        }
+        Ok(())
+    }
+    fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
         if let Writer::Parquet(writer) = &mut self.writer {
             writer.write(&batch).map_err(|e| {
                 Error::output(e.to_string()).context(format!(
@@ -218,7 +227,7 @@ impl OutputSink {
     pub(crate) fn csv_encoder(&self) -> Option<Arc<CsvEncoder>> {
         self.csv
             .as_ref()
-            .filter(|_| crate::parallel::worthwhile(&self.layout))
+            .filter(|_| self.layout.checks.is_empty() && crate::parallel::worthwhile(&self.layout))
             .cloned()
     }
     pub(crate) fn csv_writer_uses_cpu(&self) -> bool {
@@ -233,8 +242,10 @@ impl OutputSink {
         Ok(())
     }
     pub(crate) fn fixed_encoder(&self) -> Option<Arc<PhysicalEncoder>> {
-        (self.dataset.format == Format::Fixed && crate::parallel::worthwhile(&self.layout))
-            .then(|| self.physical.as_ref().unwrap().clone())
+        (self.dataset.format == Format::Fixed
+            && self.layout.checks.is_empty()
+            && crate::parallel::worthwhile(&self.layout))
+        .then(|| self.physical.as_ref().unwrap().clone())
     }
     pub(crate) fn is_compressed(&self) -> bool {
         self.dataset.compression.is_some()
@@ -273,166 +284,10 @@ impl OutputSink {
     }
 }
 
-fn canonical_destination(path: &Path) -> Result<PathBuf> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let parent = fs::canonicalize(parent)
-        .map_err(|e| Error::config(e.to_string()).context(parent.display()))?;
-    if !parent.is_dir() {
-        return Err(Error::config("output parent must be an existing directory"));
-    }
-    Ok(parent.join(
-        path.file_name()
-            .ok_or_else(|| Error::config("invalid output filename"))?,
-    ))
-}
-fn ancestor(path: &Path) -> Result<PathBuf> {
-    let mut p = path;
-    loop {
-        if p.exists() {
-            return fs::canonicalize(p).map_err(|e| Error::config(e.to_string()));
-        }
-        p = p
-            .parent()
-            .ok_or_else(|| Error::config("temporary directory has no existing ancestor"))?;
-    }
-}
-#[cfg(target_os = "linux")]
-fn mount(path: &Path) -> Result<(u64, u64)> {
-    use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
-    use std::os::unix::fs::MetadataExt;
-    let meta = fs::metadata(path).map_err(|e| Error::config(e.to_string()))?;
-    // statx follows the same resolved path that rename will use; mount IDs detect bind mounts too.
-    let stat = statx(CWD, path, AtFlags::empty(), StatxFlags::MNT_ID)
-        .map_err(|e| Error::config(e.to_string()))?;
-    Ok((meta.dev(), stat.stx_mnt_id))
-}
-#[cfg(not(target_os = "linux"))]
-fn mount(_: &Path) -> Result<(u64, u64)> {
-    Err(Error::config(
-        "atomic publication is currently supported on Linux only",
-    ))
-}
-#[cfg(unix)]
-fn identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
-}
-#[cfg(not(unix))]
-fn identity(_: &Path) -> Option<(u64, u64)> {
-    None
-}
-pub fn preflight(job: &Job, temp: &Path) -> Result<()> {
-    let temporary = ancestor(temp)?;
-    if !temporary.is_dir() {
-        return Err(Error::config("temporary directory must be a directory"));
-    }
-    let fs = mount(&temporary)?;
-    let mut paths = BTreeSet::new();
-    let mut inodes = BTreeSet::new();
-    for input in &job.input {
-        let path = fs::canonicalize(&input.path)
-            .map_err(|e| Error::config(e.to_string()).context(input.path.display()))?;
-        if !path.is_file() {
-            return Err(Error::config("input must be a regular file"));
-        }
-        paths.insert(path);
-        if let Some(id) = identity(&input.path) {
-            inodes.insert(id);
-        }
-    }
-    for output in &job.output {
-        let dest = canonical_destination(&output.path)?;
-        let resolved = if dest.exists() {
-            fs::canonicalize(&dest).map_err(|e| Error::config(e.to_string()))?
-        } else {
-            dest.clone()
-        };
-        if !paths.insert(resolved) || identity(&dest).is_some_and(|id| !inodes.insert(id)) {
-            return Err(Error::config(format!(
-                "input/output path collision: {}",
-                dest.display()
-            )));
-        }
-        if fs::symlink_metadata(&dest).is_ok() {
-            if !dest.is_file() {
-                return Err(Error::config("output must be a regular file"));
-            }
-            if output.mode.as_deref() != Some("overwrite") {
-                return Err(Error::config(format!(
-                    "output already exists: {}",
-                    dest.display()
-                )));
-            }
-        }
-        if mount(dest.parent().unwrap())? != fs {
-            return Err(Error::config(
-                "temporary directory and all output parents must be on the same filesystem and mount",
-            ));
-        }
-    }
-    Ok(())
-}
-fn sync_dir(path: &Path) -> Result<()> {
-    File::open(path)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| Error::output(e.to_string()).context(path.display()))
-}
-fn publish_one(source: &Path, dest: &Path, overwrite: bool) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        use rustix::fs::{CWD, RenameFlags, renameat_with};
-        let flags = if overwrite {
-            RenameFlags::empty()
-        } else {
-            RenameFlags::NOREPLACE
-        };
-        renameat_with(CWD, source, CWD, dest, flags).map_err(|e| Error::output(e.to_string()))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (source, dest, overwrite);
-        Err(Error::output("atomic publication unsupported on this OS"))
-    }
-}
-pub fn publish(job: &Job, staged: &[PathBuf]) -> Result<()> {
-    let mut published = vec![];
-    for (i, (output, source)) in job.output.iter().zip(staged).enumerate() {
-        let result = publish_one(
-            source,
-            &output.path,
-            output.mode.as_deref() == Some("overwrite"),
-        );
-        if let Err(e) = result {
-            return Err(e.context(format!(
-                "publication failed; published={published:?}; unpublished={:?}",
-                job.output[i..]
-                    .iter()
-                    .map(|d| (&d.id, &d.path))
-                    .collect::<Vec<_>>()
-            )));
-        }
-        published.push((&output.id, &output.path));
-        if let Err(e) =
-            sync_dir(source.parent().unwrap()).and_then(|_| sync_dir(output.path.parent().unwrap()))
-        {
-            return Err(e.context(format!(
-                "publication sync failed; published={published:?}; unpublished={:?}",
-                job.output[i + 1..]
-                    .iter()
-                    .map(|d| (&d.id, &d.path))
-                    .collect::<Vec<_>>()
-            )));
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     #[test]
     fn direct_decimal_output_keeps_scale_precision_and_null_checks() {
         use datafusion::arrow::{
@@ -469,7 +324,7 @@ mod tests {
                 DataType::Decimal128(6, 2),
                 true,
             )]));
-            let layout = RecordLayout::compile(&dataset, true, Some(schema.clone())).unwrap();
+            let layout = RecordLayout::output(&dataset, schema.clone()).unwrap();
             let path = dir.path().join("output");
             let mut sink = OutputSink::create(&dataset, &layout, &path, &schema).unwrap();
             let array = Decimal128Array::from(values)
@@ -511,7 +366,7 @@ mod tests {
                 true,
             )]));
             let dataset: Dataset = serde_json::from_value(serde_json::json!({"id":"result","path":"unused.dat","format":"fixed","encoding":"utf-8","sql":"SELECT v FROM data","fixed":{"record_separator":"none"},"fields":[{"name":"v","length":4,"nullable":true,"null_if":["NULL"]}]})).unwrap();
-            let layout = RecordLayout::compile(&dataset, true, Some(schema.clone())).unwrap();
+            let layout = RecordLayout::output(&dataset, schema.clone()).unwrap();
             let path = d.path().join("out.dat");
             let mut sink = OutputSink::create(&dataset, &layout, &path, &schema).unwrap();
             let batch = RecordBatch::try_new(schema, vec![array]).unwrap();
@@ -527,44 +382,5 @@ mod tests {
         assert_eq!(csv_cell(None, true, ',', '"'), "");
         assert_eq!(csv_cell(Some(""), false, ',', '"'), "\"\"");
         assert_eq!(csv_cell(Some("a\"b"), false, ',', '"'), "\"a\"\"b\"");
-    }
-    #[test]
-    fn no_replace_race() {
-        let d = tempfile::tempdir().unwrap();
-        let a = d.path().join("a");
-        let b = d.path().join("b");
-        fs::write(&a, b"new").unwrap();
-        fs::write(&b, b"old").unwrap();
-        assert!(publish_one(&a, &b, false).is_err());
-        assert_eq!(fs::read(&b).unwrap(), b"old");
-        publish_one(&a, &b, true).unwrap();
-        assert_eq!(fs::read(&b).unwrap(), b"new");
-    }
-    #[test]
-    fn partial_publication_reports_exact_state() {
-        let d = tempfile::tempdir().unwrap();
-        let config = serde_json::json!({"input":[{"id":"data","format":"csv","encoding":"utf-8","path":"in.csv","fields":[{"name":"value"}]}],"process":[],"output":[{"id":"first","format":"csv","encoding":"utf-8","sql":"SELECT value FROM data","path":"first.csv"},{"id":"second","format":"csv","encoding":"utf-8","sql":"SELECT value FROM data","path":"second.csv"}]});
-        let jobfile = d.path().join("job.yml");
-        fs::write(&jobfile, config.to_string()).unwrap();
-        let job = crate::config::load(&jobfile).unwrap();
-        let a = d.path().join("a.tmp");
-        let b = d.path().join("b.tmp");
-        fs::write(&a, b"first").unwrap();
-        fs::write(&b, b"second").unwrap();
-        fs::create_dir(d.path().join("second.csv")).unwrap();
-        let error = publish(&job, &[a, b.clone()]).unwrap_err();
-        assert_eq!(error.code, 5);
-        assert_eq!(fs::read(d.path().join("first.csv")).unwrap(), b"first");
-        assert!(b.exists());
-        assert!(
-            error.message.contains("published=[(\"first\""),
-            "{}",
-            error.message
-        );
-        assert!(
-            error.message.contains("unpublished=[(\"second\""),
-            "{}",
-            error.message
-        );
     }
 }

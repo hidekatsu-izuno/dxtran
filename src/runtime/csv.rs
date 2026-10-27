@@ -1,7 +1,13 @@
 //! Format CSV batches concurrently; encode text and write in original order.
-use super::*;
+use super::original_error;
+use crate::{
+    error::{Error, Result},
+    sink,
+};
 use crate::{parallel::ordered, sink::CsvEncoder};
 use datafusion::physical_plan::SendableRecordBatchStream;
+use futures::StreamExt;
+use std::sync::Arc;
 
 pub(super) async fn write(
     sink: sink::OutputSink,

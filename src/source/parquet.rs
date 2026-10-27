@@ -1,8 +1,22 @@
 //! Decode row groups ahead, with bounded batches and original file ordering.
-use super::*;
+use super::{SourceTable, batch::order_key};
 use crate::parallel::{check_cancelled, ordered};
+use crate::{
+    error::{Error, Result},
+    framing,
+};
 use ::parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
+use datafusion::{
+    arrow::{
+        array::StringBuilder,
+        record_batch::{RecordBatch, RecordBatchOptions},
+    },
+    error::{DataFusionError, Result as DFResult},
+    physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter},
+};
+use futures::stream;
 use futures::{StreamExt, TryStreamExt};
+use std::{fs::File, sync::Arc};
 
 pub(super) fn stream(
     source: SourceTable,

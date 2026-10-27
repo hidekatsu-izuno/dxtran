@@ -17,8 +17,8 @@ fn run(job_path: &Path, stage: &Path) -> Result<()> {
     let job = config::load(job_path)?;
     let input = &job.input[0];
     let output = &job.output[0];
-    let input_layout = RecordLayout::compile(input, false, None)?;
-    let output_layout = RecordLayout::compile(output, true, Some(input_layout.schema.clone()))?;
+    let input_layout = RecordLayout::input(input)?;
+    let output_layout = RecordLayout::output(output, input_layout.schema.clone())?;
     let columns = output_layout
         .fields
         .iter()
@@ -48,7 +48,7 @@ fn run(job_path: &Path, stage: &Path) -> Result<()> {
         for (field, indices) in output_layout.fields.iter().zip(&columns) {
             let values = indices.iter().map(|i| row[*i].clone()).collect::<Vec<_>>();
             let bytes = field.encode(&values, output.format)?;
-            body[field.offset..field.offset + bytes.len()].copy_from_slice(&bytes);
+            body[field.offset()..field.offset() + bytes.len()].copy_from_slice(&bytes);
         }
         writer
             .write_all(&body)

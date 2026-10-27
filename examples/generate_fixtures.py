@@ -175,6 +175,27 @@ def fixtures():
         put("compression/data/" + name, stream.getvalue())
     put("compression/expected/csv.csv", parquet_csv)
     put("compression/expected/fixed.csv", "id,label,amount\n0002,東京,12.30\n0001,A,0.50\n")
+    conditional_records = [
+        b"H20261028DXTRAN ",
+        b"D0000001   12.30",
+        b"D0000002   -0.50",
+        b"T      2   11.80",
+    ]
+    assert all(len(record) == 16 for record in conditional_records)
+    fixed_records = b"".join(record + b"\n" for record in conditional_records)
+    binary("conditional_records/data/records.dat", fixed_records)
+    binary("conditional_records/expected/records.dat", fixed_records)
+    binary("conditional_records/expected/records.rdw", b"".join(
+        struct.pack(">H", len(record) + 4) + b"\x00\x00" + record
+        for record in conditional_records))
+    put("conditional_records/expected/records.csv",
+        "record_type,business_date,sender,customer_id,amount,detail_count,total_amount\n"
+        "H,2026-10-28,DXTRAN,,,,\n"
+        "D,,,0000001,12.30,,\n"
+        "D,,,0000002,-0.50,,\n"
+        "T,,,,,2,11.80\n")
+    put("checks/data/records.csv", "id,amount\nA001,12.30\nA002,-0.50\nA003,\n")
+    put("checks/expected/records.csv", "id,amount\nA001,24.60\nA002,-1.00\nA003,\n")
     return files
 
 
@@ -206,6 +227,15 @@ def manifest():
             {"file": "readback.yml", "outputs": {
                 "out/csv_gzip.csv": "expected/csv.csv", "out/csv_zstd.csv": "expected/csv.csv",
                 "out/fixed_gzip.csv": "expected/fixed.csv", "out/fixed_zstd.csv": "expected/fixed.csv"}}]),
+        ("conditional_records", [job("job.yml", "records.csv", "records.dat", "records.rdw"),
+            {"file": "readback.yml", "outputs": {
+                "out/fixed_readback.csv": "expected/records.csv",
+                "out/rdw_readback.csv": "expected/records.csv"}}]),
+        ("checks", [job("job.yml", "records.csv"),
+            {"file": "input_abend.yml", "exit_code": 3, "scan_exit_code": 3,
+             "diagnostic": "入力金額が負のため異常終了します。", "absent": ["out/input_abend.csv"]},
+            {"file": "output_abend.yml", "exit_code": 5,
+             "diagnostic": "変換後の金額が負のため異常終了します。", "absent": ["out/output_abend.csv"]}]),
     ]
     errors = []
     for file, code, scan, diagnostic, absent in [

@@ -28,21 +28,33 @@ hex = "0.4"
 memchr = "2"
 parquet = { version = "=59.3.1", default-features = false, features = ["arrow", "snap", "flate2-zlib-rs", "brotli", "lz4", "zstd"] }
 regex = "1"
-rustix = { version = "1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-signal-hook = { version = "0.4", default-features = false }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
 yaml-rust2 = "0.10"
 zstd = { version = "0.13", default-features = false }
 
-[dev-dependencies]
+[target.'cfg(windows)'.dependencies]
+tokio = { version = "1", features = ["signal"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = { version = "0.4", default-features = false }
+
+[target.'cfg(unix)'.dev-dependencies]
 rustix = { version = "1", features = ["process"] }
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
 
 [profile.dev]
 debug = 0

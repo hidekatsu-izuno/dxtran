@@ -1,0 +1,21 @@
+input:
+  - import: ./input.yml
+    check:
+      - when: "amount < 0"
+        level: warn
+        message: "負の金額があります。処理を継続します。"
+      - when: "amount IS NULL"
+        level: info
+        message: "金額が未指定です。"
+output:
+  - id: doubled
+    sql: SELECT id, amount * 2 AS amount FROM records
+    format: csv
+    path: out/records.csv
+    encoding: utf-8
+    mode: overwrite
+    # 1件だけなら配列にせずマップで指定できる。
+    check:
+      when: "id = 'A001' AND amount > 0"
+      level: info
+      message: "正の金額を2倍して出力します。"

@@ -1,0 +1,13 @@
+input:
+  - import: ./input.yml
+    check:
+      when: "amount < 0"
+      level: error
+      message: "入力金額が負のため異常終了します。"
+output:
+  - id: result
+    sql: SELECT * FROM records
+    format: csv
+    path: out/input_abend.csv
+    encoding: utf-8
+    mode: overwrite

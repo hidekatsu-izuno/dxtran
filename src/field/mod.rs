@@ -1,33 +1,31 @@
+mod compile;
 pub mod datetime;
+mod decimal;
+mod float;
+pub(crate) use decimal::decimal_text_into;
+pub use decimal::{check_precision, decimal_text, parse_decimal, rescale};
+pub use float::{decode_hfp, encode_hfp};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Input,
+    Output,
+}
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Trim {
+    None,
+    Right,
+    Both,
+}
+
 use crate::{
-    config::{Field, Format, Length, identifier},
+    config::{Field, Format},
     encoding::TextEncoding,
     error::{Error, Result},
 };
 use base64::Engine;
 use datafusion::{arrow::datatypes::DataType, common::ScalarValue};
 use regex::Regex;
-
-const DECIMAL_POWERS: [u128; 39] = {
-    let mut powers = [1; 39];
-    let mut i = 1;
-    while i < powers.len() {
-        powers[i] = powers[i - 1] * 10;
-        i += 1;
-    }
-    powers
-};
-
-fn pop_decimal_digit(value: &mut u128) -> u8 {
-    if let Ok(small) = u64::try_from(*value) {
-        *value = u128::from(small / 10);
-        (small % 10) as u8
-    } else {
-        let digit = (*value % 10) as u8;
-        *value /= 10;
-        digit
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldType {
@@ -118,21 +116,21 @@ impl FieldType {
 }
 #[derive(Clone, Debug)]
 pub struct CompiledField {
-    pub spec: Field,
-    pub kind: FieldType,
-    pub offset: usize,
-    pub length: Option<usize>,
-    pub precision: u8,
-    pub scale: u8,
-    pub encoding: TextEncoding,
-    pub pad: char,
-    pub trim: String,
-    pub null_bytes: Option<Vec<u8>>,
-    pub null_regex: Option<Regex>,
-    pub pattern: Option<datetime::Pattern>,
-    pub true_values: Vec<String>,
-    pub false_values: Vec<String>,
-    pub null_output: Option<Vec<u8>>,
+    pub(crate) spec: Field,
+    pub(crate) kind: FieldType,
+    pub(crate) offset: usize,
+    pub(crate) length: Option<usize>,
+    pub(crate) precision: u8,
+    pub(crate) scale: u8,
+    pub(crate) encoding: TextEncoding,
+    pub(crate) pad: char,
+    pub(crate) trim: Trim,
+    pub(crate) null_bytes: Option<Vec<u8>>,
+    pub(crate) null_regex: Option<Regex>,
+    pub(crate) pattern: Option<datetime::Pattern>,
+    pub(crate) true_values: Vec<String>,
+    pub(crate) false_values: Vec<String>,
+    pub(crate) null_output: Option<Vec<u8>>,
 }
 
 /// Consumers can append borrowed variable-width values without allocating a
@@ -162,367 +160,14 @@ impl ValueSink for Vec<ScalarValue> {
     }
 }
 impl CompiledField {
-    pub fn compile(
-        spec: Field,
-        format: Format,
-        output: bool,
-        offset: usize,
-        encoding: TextEncoding,
-    ) -> Result<Self> {
-        let bad = |s: &str| {
-            Error::config(s).context(format!(
-                "{} field {}",
-                spec.origin
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-                spec.name.as_deref().unwrap_or("FILLER")
-            ))
-        };
-        let kind = if spec.name.is_none() && format != Format::Csv {
-            FieldType::Filler
-        } else {
-            FieldType::parse(spec.kind.as_deref().unwrap_or("string"))?
-        };
-        if kind != FieldType::Filler && !spec.name.as_deref().is_some_and(identifier) {
-            return Err(bad("invalid or missing column name"));
-        }
-        let length = match &spec.length {
-            Some(Length::Fixed(n)) if *n > 0 => Some(*n),
-            Some(Length::Rest(s))
-                if s == "rest"
-                    && format == Format::Rdw
-                    && matches!(kind, FieldType::String | FieldType::Binary) =>
-            {
-                None
-            }
-            None if format == Format::Csv => None,
-            _ => return Err(bad("invalid or missing length")),
-        };
-        if length.is_some_and(|n| n > crate::framing::MAX_RECORD) {
-            return Err(bad("field exceeds 16 MiB record limit"));
-        }
-        let len = length.unwrap_or(0);
-        if kind == FieldType::Filler {
-            let mut allowed = spec.clone();
-            allowed.offset = None;
-            allowed.length = None;
-            allowed.fill_byte = None;
-            allowed.origin = None;
-            allowed.origins.clear();
-            if format == Format::Csv
-                || format == Format::Rdw && length.is_none()
-                || allowed != Field::default()
-            {
-                return Err(bad("FILLER accepts only offset, length and fill_byte"));
-            }
-        }
-        if format == Format::Csv {
-            if spec.length.is_some()
-                || spec.offset.is_some()
-                || spec.trim.is_some()
-                || spec.pad_char.is_some()
-                || spec.null_if.is_some()
-                || spec.null_if_pattern.is_some()
-                || spec.null_bytes.is_some()
-                || spec.null_output.is_some()
-                || spec.max_length.is_some()
-            {
-                return Err(bad("physical layout and NULL markers are forbidden in CSV"));
-            }
-            if !matches!(
-                kind,
-                FieldType::String
-                    | FieldType::Decimal
-                    | FieldType::Boolean
-                    | FieldType::Date
-                    | FieldType::Time
-                    | FieldType::Timestamp
-                    | FieldType::Binary
-            ) {
-                return Err(bad("type is not available for CSV"));
-            }
-        }
-        if spec
-            .quote_style
-            .as_deref()
-            .is_some_and(|v| !matches!(v, "always" | "necessary"))
-            || spec.quote_style.is_some() && !(output && format == Format::Csv)
-        {
-            return Err(bad("quote_style requires CSV output and always/necessary"));
-        }
-        if spec.fill_byte.is_some() && kind != FieldType::Filler {
-            return Err(bad("fill_byte requires FILLER"));
-        }
-        if (spec.precision.is_some() || spec.scale.is_some()) && !kind.decimal() {
-            return Err(bad("precision/scale require a decimal type"));
-        }
-        if spec.zone.is_some()
-            && !matches!(
-                kind,
-                FieldType::Zoned | FieldType::Lzoned | FieldType::Tzoned | FieldType::Uzoned
-            )
-        {
-            return Err(bad("zone requires a zoned type"));
-        }
-        if spec
-            .zone
-            .as_deref()
-            .is_some_and(|s| !matches!(s, "ascii" | "ebcdic"))
-        {
-            return Err(bad("invalid zone"));
-        }
-        if (spec.trim.is_some()
-            || spec.pad_char.is_some()
-            || spec.null_if.is_some()
-            || spec.null_if_pattern.is_some()
-            || spec.null_output.is_some())
-            && !kind.text()
-        {
-            return Err(bad("text options require a text storage type"));
-        }
-        if (spec.true_values.is_some()
-            || spec.false_values.is_some()
-            || spec.true_output.is_some()
-            || spec.false_output.is_some())
-            && kind != FieldType::Boolean
-        {
-            return Err(bad("boolean options require boolean"));
-        }
-        if (spec.datetime_pattern.is_some() || spec.two_digit_year_start.is_some())
-            && !matches!(
-                kind,
-                FieldType::Date | FieldType::Time | FieldType::Timestamp
-            )
-        {
-            return Err(bad("datetime options require a datetime type"));
-        }
-        if spec.unit.is_some() && !matches!(kind, FieldType::Time | FieldType::Timestamp)
-            || spec.timezone_set && kind != FieldType::Timestamp
-        {
-            return Err(bad("unit/timezone used on incompatible type"));
-        }
-        if spec.binary_encoding.is_some() && !(kind == FieldType::Binary && format == Format::Csv) {
-            return Err(bad("binary_encoding requires CSV binary"));
-        }
-        if spec
-            .binary_encoding
-            .as_deref()
-            .is_some_and(|s| !matches!(s, "hex" | "base64"))
-        {
-            return Err(bad("invalid binary_encoding"));
-        }
-        if (spec.bits.is_some() || spec.bit_order.is_some()) && kind != FieldType::Bits {
-            return Err(bad("bits options require bits"));
-        }
-        if spec.max_length.is_some() && length.is_some() {
-            return Err(bad("max_length requires length rest"));
-        }
-        if spec.nullable != Some(true)
-            && (spec.null_if.is_some()
-                || spec.null_if_pattern.is_some()
-                || spec.null_bytes.is_some()
-                || spec.null_output.is_some())
-        {
-            return Err(bad("NULL rules require nullable true"));
-        }
-        let valid_width = match kind {
-            FieldType::IntLe | FieldType::IntBe | FieldType::UintLe | FieldType::UintBe => {
-                (1..=8).contains(&len)
-            }
-            FieldType::FloatLe | FieldType::FloatBe | FieldType::HfloatLe => matches!(len, 4 | 8),
-            FieldType::HfloatBe => matches!(len, 4 | 8 | 16),
-            FieldType::Lzoned | FieldType::Tzoned => len >= 2,
-            _ => true,
-        };
-        if !valid_width {
-            return Err(bad("incompatible physical width"));
-        }
-        let capacity = match kind {
-            FieldType::Zoned | FieldType::Uzoned => len,
-            FieldType::Lzoned | FieldType::Tzoned => len - 1,
-            FieldType::Packed | FieldType::Upacked => 2 * len - 1,
-            FieldType::Npacked => 2 * len,
-            _ => 38,
-        };
-        let precision = spec.precision.map(usize::from).unwrap_or(capacity);
-        if kind.decimal() && (!(1..=38).contains(&precision) || precision > capacity) {
-            return Err(bad(
-                "decimal precision must be 1..38 and fit physical capacity",
-            ));
-        }
-        let scale = spec.scale.unwrap_or(0);
-        if kind.decimal() && scale as usize > precision {
-            return Err(bad("scale exceeds precision"));
-        }
-        let pad = spec.pad_char.as_deref().unwrap_or(" ");
-        if pad.chars().count() != 1 {
-            return Err(bad("pad_char must be one Unicode character"));
-        }
-        let pad = pad.chars().next().unwrap();
-        let trim = spec.trim.clone().unwrap_or_else(|| {
-            if !kind.text() || format == Format::Csv || length.is_none() {
-                "none"
-            } else if kind == FieldType::String {
-                "right"
-            } else {
-                "both"
-            }
-            .into()
-        });
-        if !matches!(trim.as_str(), "none" | "right" | "both") {
-            return Err(bad("invalid trim"));
-        }
-        let null_regex = spec
-            .null_if_pattern
-            .as_ref()
-            .map(|s| {
-                Regex::new(&format!("\\A(?:{s})\\z")).map_err(|e| {
-                    bad(&format!("null_if_pattern: {e}")).context(
-                        spec.origins
-                            .get("null_if_pattern")
-                            .map(ToString::to_string)
-                            .unwrap_or_default(),
-                    )
-                })
-            })
-            .transpose()?;
-        let null_bytes = spec
-            .null_bytes
-            .as_ref()
-            .map(|s| hex::decode(s).map_err(|_| bad("invalid null_bytes hex")))
-            .transpose()?;
-        if null_bytes.as_ref().is_some_and(|b| {
-            length.is_some_and(|n| b.len() != n) || spec.max_length.is_some_and(|n| b.len() > n)
-        }) {
-            return Err(bad("null_bytes width mismatch"));
-        }
-        let pattern = if matches!(
-            kind,
-            FieldType::Date | FieldType::Time | FieldType::Timestamp
-        ) {
-            Some(datetime::Pattern::compile(
-                &spec,
-                spec.kind.as_deref().unwrap(),
-            )?)
-        } else {
-            None
-        };
-        let trim_value = |s: &str| match trim.as_str() {
-            "both" => s.trim_matches(pad).to_string(),
-            "right" => s.trim_end_matches(pad).to_string(),
-            _ => s.to_owned(),
-        };
-        let true_values: Vec<String> = spec
-            .true_values
-            .clone()
-            .unwrap_or_else(|| vec!["true".into()])
-            .iter()
-            .map(|s| trim_value(s))
-            .collect();
-        let false_values: Vec<String> = spec
-            .false_values
-            .clone()
-            .unwrap_or_else(|| vec!["false".into()])
-            .iter()
-            .map(|s| trim_value(s))
-            .collect();
-        if kind == FieldType::Boolean
-            && (true_values.is_empty()
-                || false_values.is_empty()
-                || true_values.iter().any(|s| false_values.contains(s)))
-        {
-            return Err(bad(
-                "boolean candidates must be nonempty and disjoint after trim",
-            ));
-        }
-        if kind == FieldType::Bits {
-            let bits = spec
-                .bits
-                .as_ref()
-                .filter(|b| !b.is_empty())
-                .ok_or_else(|| bad("bits must be nonempty"))?;
-            let mut positions = std::collections::BTreeSet::new();
-            let mut names = std::collections::BTreeSet::new();
-            for b in bits {
-                if b.bit >= len * 8
-                    || !identifier(&b.name)
-                    || !positions.insert(b.bit)
-                    || !names.insert(&b.name)
-                {
-                    return Err(bad("invalid or duplicate bit number/name"));
-                }
-            }
-            if spec
-                .bit_order
-                .as_deref()
-                .is_some_and(|s| !matches!(s, "msb0" | "lsb0"))
-            {
-                return Err(bad("invalid bit_order"));
-            }
-        }
-        let mut f = Self {
-            spec,
-            kind,
-            offset,
-            length,
-            precision: precision as u8,
-            scale,
-            encoding,
-            pad,
-            trim,
-            null_bytes,
-            null_regex,
-            pattern,
-            true_values,
-            false_values,
-            null_output: None,
-        };
-        if output && format == Format::Rdw && f.spec.nullable == Some(true) {
-            if f.spec.null_output.is_some() == f.null_bytes.is_some() {
-                return Err(Error::config(
-                    "rdw nullable output requires exactly one of null_output/null_bytes",
-                ));
-            }
-            let bytes = if let Some(s) = &f.spec.null_output {
-                f.padded(s).map_err(|e| Error::config(e.message))?
-            } else {
-                f.null_bytes.clone().unwrap()
-            };
-            if !f.is_null_bytes(&bytes)? {
-                return Err(Error::config(
-                    "rdw NULL output does not match its input NULL rules",
-                ));
-            }
-            f.null_output = Some(bytes);
-        }
-        if output && format == Format::Fixed && kind != FieldType::Bits && kind != FieldType::Filler
-        {
-            f.fixed_null().map_err(|e| Error::config(e.message))?;
-        }
-        if kind == FieldType::Boolean && output {
-            for (b, candidates) in [(true, &f.true_values), (false, &f.false_values)] {
-                let s = f.boolean_text(b);
-                let bytes = if format == Format::Csv {
-                    s.as_bytes().to_vec()
-                } else {
-                    f.padded(&s).map_err(|e| Error::config(e.message))?
-                };
-                let decoded = if format == Format::Csv {
-                    s
-                } else {
-                    f.trim_text(&f.encoding.decode(&bytes)?).to_owned()
-                };
-                if !candidates.contains(&decoded)
-                    || format != Format::Csv && f.is_null_bytes(&bytes)?
-                {
-                    return Err(Error::config(
-                        "boolean output must roundtrip and not match a NULL rule",
-                    ));
-                }
-            }
-        }
-        Ok(f)
+    pub fn kind(&self) -> FieldType {
+        self.kind
+    }
+    pub fn precision(&self) -> u8 {
+        self.precision
+    }
+    pub fn offset(&self) -> usize {
+        self.offset
     }
     pub fn names(&self) -> Vec<String> {
         if self.kind == FieldType::Filler {
@@ -560,9 +205,9 @@ impl CompiledField {
         ScalarValue::try_from(&self.data_type()).unwrap()
     }
     pub fn trim_text<'a>(&self, s: &'a str) -> &'a str {
-        match self.trim.as_str() {
-            "right" => s.trim_end_matches(self.pad),
-            "both" => s.trim_matches(self.pad),
+        match self.trim {
+            Trim::Right => s.trim_end_matches(self.pad),
+            Trim::Both => s.trim_matches(self.pad),
             _ => s,
         }
     }
@@ -805,169 +450,6 @@ impl CompiledField {
             7 - bit % 8
         }
     }
-    fn decode_digits(&self, b: &[u8]) -> Result<i128> {
-        use FieldType::*;
-        let bad = || Error::input("invalid decimal digit, zone, sign or precision");
-        // At most 19 unsigned decimal digits fit in u64. Validate the entire
-        // zone/digit byte, then accumulate without wide checked arithmetic.
-        if self.kind == Uzoned && b.len() <= 19 {
-            let zero = if self.spec.zone.as_deref() == Some("ascii") {
-                b'0'
-            } else {
-                0xf0
-            };
-            let mut value = 0u64;
-            for byte in b {
-                let digit = byte.wrapping_sub(zero);
-                if digit > 9 {
-                    return Err(bad());
-                }
-                value = value * 10 + u64::from(digit);
-            }
-            let value = i128::from(value);
-            check_precision(value, self.precision).map_err(|_| bad())?;
-            return Ok(value);
-        }
-        let mut value = 0i128;
-        let mut digit = |d: u8| -> Result<()> {
-            if d > 9 {
-                return Err(bad());
-            }
-            value = value
-                .checked_mul(10)
-                .and_then(|v| v.checked_add(i128::from(d)))
-                .ok_or_else(bad)?;
-            Ok(())
-        };
-        let mut negative = false;
-        if matches!(self.kind, Packed | Upacked | Npacked) {
-            for (i, byte) in b.iter().enumerate() {
-                digit(byte >> 4)?;
-                if self.kind != Npacked && i == b.len() - 1 {
-                    negative = match byte & 15 {
-                        0xb | 0xd if self.kind == Packed => true,
-                        0xa | 0xc | 0xe if self.kind == Packed => false,
-                        0xf => false,
-                        _ => return Err(bad()),
-                    };
-                } else {
-                    digit(byte & 15)?;
-                }
-            }
-        } else {
-            let ascii = self.spec.zone.as_deref() == Some("ascii");
-            let zone = if ascii { 3 } else { 15 };
-            let mut start = 0;
-            let mut end = b.len();
-            if matches!(self.kind, Lzoned | Tzoned) {
-                let s = if self.kind == Lzoned {
-                    start = 1;
-                    b[0]
-                } else {
-                    end -= 1;
-                    b[end]
-                };
-                negative = if s == if ascii { 0x2d } else { 0x60 } {
-                    true
-                } else if s == if ascii { 0x2b } else { 0x4e } {
-                    false
-                } else {
-                    return Err(bad());
-                };
-            }
-            for (i, byte) in b.iter().enumerate().take(end).skip(start) {
-                let z = byte >> 4;
-                if self.kind == Zoned && i == end - 1 {
-                    negative = if ascii {
-                        match z {
-                            3 => false,
-                            7 => true,
-                            _ => return Err(bad()),
-                        }
-                    } else {
-                        match z {
-                            0xa | 0xc | 0xe | 0xf => false,
-                            0xb | 0xd => true,
-                            _ => return Err(bad()),
-                        }
-                    };
-                } else if z != zone {
-                    return Err(bad());
-                }
-                digit(byte & 15)?;
-            }
-        }
-        check_precision(value, self.precision).map_err(|_| bad())?;
-        Ok(if negative { -value } else { value })
-    }
-    fn encode_digits(&self, value: i128) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        self.encode_digits_into(value, &mut bytes)?;
-        Ok(bytes)
-    }
-    fn encode_digits_into(&self, value: i128, bytes: &mut Vec<u8>) -> Result<()> {
-        use FieldType::*;
-        check_precision(value, self.precision)?;
-        let len = self.length.unwrap();
-        let negative = value < 0;
-        if negative && matches!(self.kind, Uzoned | Upacked | Npacked) {
-            return Err(Error::output("negative value in unsigned decimal"));
-        }
-        bytes.clear();
-        let mut magnitude = value.unsigned_abs();
-        if matches!(self.kind, Packed | Upacked | Npacked) {
-            bytes.resize(len, 0);
-            let mut nibbles = len * 2;
-            if self.kind != Npacked {
-                nibbles -= 1;
-                bytes[len - 1] = if self.kind == Upacked {
-                    15
-                } else if negative {
-                    13
-                } else {
-                    12
-                };
-            }
-            // The compiled precision fits the field; zero padding is already in place.
-            while magnitude != 0 {
-                nibbles -= 1;
-                bytes[nibbles / 2] |= pop_decimal_digit(&mut magnitude)
-                    << if nibbles.is_multiple_of(2) { 4 } else { 0 };
-            }
-        } else {
-            let ascii = self.spec.zone.as_deref() == Some("ascii");
-            let zone = if ascii { 0x30 } else { 0xf0 };
-            bytes.resize(len, zone);
-            let mut end = if self.kind == Tzoned { len - 1 } else { len };
-            while magnitude != 0 {
-                end -= 1;
-                bytes[end] |= pop_decimal_digit(&mut magnitude);
-            }
-            if self.kind == Zoned {
-                bytes[len - 1] = (bytes[len - 1] & 15)
-                    | if ascii {
-                        if negative { 0x70 } else { 0x30 }
-                    } else if negative {
-                        0xd0
-                    } else {
-                        0xc0
-                    };
-            }
-            let sign = if ascii {
-                if negative { 0x2d } else { 0x2b }
-            } else if negative {
-                0x60
-            } else {
-                0x4e
-            };
-            if self.kind == Lzoned {
-                bytes[0] = sign;
-            } else if self.kind == Tzoned {
-                bytes[len - 1] = sign;
-            }
-        }
-        Ok(())
-    }
     pub fn boolean_text(&self, value: bool) -> String {
         if value {
             self.spec.true_output.clone().unwrap_or_else(|| {
@@ -1179,102 +661,6 @@ impl CompiledField {
         Ok(())
     }
 }
-pub fn check_precision(v: i128, p: u8) -> Result<()> {
-    if DECIMAL_POWERS
-        .get(usize::from(p))
-        .is_none_or(|limit| v.unsigned_abs() >= *limit)
-    {
-        Err(Error::output("decimal precision overflow"))
-    } else {
-        Ok(())
-    }
-}
-pub fn rescale(v: i128, from: i32, to: i32) -> Result<i128> {
-    if from == to {
-        return Ok(v);
-    }
-    let overflow = || Error::output("decimal overflow or scale would lose nonzero digits");
-    let delta = to - from;
-    if delta.unsigned_abs() > 38 {
-        if v == 0 {
-            return Ok(0);
-        }
-        return Err(overflow());
-    }
-    let power = DECIMAL_POWERS[delta.unsigned_abs() as usize] as i128;
-    if delta >= 0 {
-        v.checked_mul(power).ok_or_else(overflow)
-    } else if v % power == 0 {
-        Ok(v / power)
-    } else {
-        Err(overflow())
-    }
-}
-pub fn parse_decimal(s: &str, p: u8, scale: u8) -> Result<i128> {
-    let bad =
-        || Error::input("invalid decimal, precision overflow or nonzero excess fractional digits");
-    let neg = s.starts_with('-');
-    let s = s.strip_prefix(['-', '+']).unwrap_or(s);
-    let mut parts = s.split('.');
-    let integer = parts.next().unwrap();
-    let fraction = parts.next().unwrap_or("");
-    if parts.next().is_some()
-        || integer.is_empty()
-        || !integer.bytes().all(|c| c.is_ascii_digit())
-        || !fraction.bytes().all(|c| c.is_ascii_digit())
-    {
-        return Err(bad());
-    }
-    let excess = fraction.get(scale as usize..).unwrap_or("");
-    if !excess.bytes().all(|c| c == b'0') {
-        return Err(bad());
-    }
-    let fraction = &fraction[..fraction.len().min(scale as usize)];
-    let mut value = 0i128;
-    for c in integer
-        .bytes()
-        .chain(fraction.bytes())
-        .chain(std::iter::repeat_n(b'0', scale as usize - fraction.len()))
-    {
-        value = value
-            .checked_mul(10)
-            .and_then(|v| v.checked_add(i128::from(c - b'0')))
-            .ok_or_else(bad)?;
-    }
-    check_precision(value, p).map_err(|_| bad())?;
-    Ok(if neg { -value } else { value })
-}
-pub fn decimal_text(v: i128, scale: u8) -> String {
-    let mut out = String::new();
-    decimal_text_into(v, scale, &mut out);
-    out
-}
-pub(crate) fn decimal_text_into(v: i128, scale: u8, out: &mut String) {
-    // The public formatter accepts any u8 scale; SQL Decimal128 uses at most 38.
-    let mut digits = [b'0'; 256];
-    let mut start = digits.len();
-    let mut n = v.unsigned_abs();
-    loop {
-        start -= 1;
-        digits[start] = b'0' + pop_decimal_digit(&mut n);
-        if n == 0 {
-            break;
-        }
-    }
-    start = start.min(digits.len() - usize::from(scale) - 1);
-    let digits = std::str::from_utf8(&digits[start..]).expect("ASCII digits");
-    if v < 0 {
-        out.push('-');
-    }
-    if scale == 0 {
-        out.push_str(digits);
-    } else {
-        let i = digits.len() - scale as usize;
-        out.push_str(&digits[..i]);
-        out.push('.');
-        out.push_str(&digits[i..]);
-    }
-}
 fn signed(v: &ScalarValue) -> Result<i64> {
     match v {
         ScalarValue::Int8(Some(v)) => Ok(i64::from(*v)),
@@ -1310,74 +696,10 @@ fn float_text(v: f64, f: Option<f32>) -> String {
         v.to_string()
     }
 }
-pub fn decode_hfp(b: &[u8]) -> f64 {
-    let mut fraction = 0u128;
-    for (i, byte) in b.iter().enumerate().skip(1) {
-        if b.len() == 16 && i == 8 {
-            continue;
-        }
-        fraction = (fraction << 8) | u128::from(*byte);
-    }
-    let bits = if b.len() == 16 {
-        112
-    } else {
-        (b.len() - 1) * 8
-    };
-    let exponent = i32::from(b[0] & 127) - 64;
-    let value = (fraction as f64) * 2f64.powi(exponent * 4 - bits as i32);
-    if b[0] & 128 != 0 { -value } else { value }
-}
-pub fn encode_hfp(value: f64, len: usize) -> Result<Vec<u8>> {
-    if !value.is_finite() {
-        return Err(Error::output("HFP cannot represent NaN or infinity"));
-    }
-    if value == 0.0 {
-        return Ok(vec![0; len]);
-    }
-    let mut fraction = value.abs();
-    let mut characteristic: i32 = 64;
-    while fraction >= 1.0 {
-        fraction /= 16.0;
-        characteristic += 1;
-    }
-    while fraction < 0.0625 {
-        fraction *= 16.0;
-        characteristic -= 1;
-    }
-    if !(0..=127).contains(&characteristic) {
-        return Err(Error::output("HFP overflow or underflow"));
-    }
-    let bits = if len == 16 { 112 } else { (len - 1) * 8 };
-    let mut integer = (fraction * 2f64.powi(bits as i32)).round_ties_even() as u128;
-    if integer >= 1u128 << bits {
-        integer >>= 4;
-        characteristic += 1;
-        if characteristic > 127 {
-            return Err(Error::output("HFP overflow"));
-        }
-    }
-    if integer == 0 {
-        return Err(Error::output("HFP underflow"));
-    }
-    let sign = if value.is_sign_negative() { 128 } else { 0 };
-    let mut out = vec![0; len];
-    out[0] = sign | characteristic as u8;
-    for i in (1..len).rev() {
-        if len == 16 && i == 8 {
-            continue;
-        }
-        out[i] = integer as u8;
-        integer >>= 8;
-    }
-    if len == 16 {
-        out[8] = sign | ((characteristic - 14).rem_euclid(128) as u8);
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Length;
     #[test]
     fn decimal_format_preserves_extreme_values_and_scales() {
         for value in [i128::MIN, i128::MAX, -123456789, -1, 0, 1, 123456789] {
@@ -1407,7 +729,7 @@ mod tests {
                 ..Default::default()
             },
             Format::Fixed,
-            true,
+            crate::field::Direction::Output,
             0,
             TextEncoding::resolve("utf-8").unwrap(),
         )

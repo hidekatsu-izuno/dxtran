@@ -43,15 +43,45 @@ impl PhysicalEncoder {
         let mut body = Vec::with_capacity(self.layout.length);
         let mut bytes = Vec::new();
         let mut values = Vec::new();
+        let all_fields: Vec<_> = (0..self.layout.fields.len()).collect();
+        let predicates = self
+            .layout
+            .conditional
+            .as_ref()
+            .map(|c| c.evaluate(batch))
+            .transpose()
+            .map_err(|e| {
+                e.context(format!(
+                    "output {} record {}..{}",
+                    self.id,
+                    *rows + 1,
+                    *rows + batch.num_rows() as u64
+                ))
+            })?;
         for row in 0..batch.num_rows() {
             if row % 256 == 0
                 && let Some(cancelled) = cancelled
             {
                 check_cancelled(cancelled)?;
             }
+            let selected = self
+                .layout
+                .conditional
+                .as_ref()
+                .map(|c| c.select(&self.layout, predicates.as_ref().unwrap(), row))
+                .transpose()
+                .map_err(|e| e.context(format!("output {} record {}", self.id, *rows + 1)))?;
             body.clear();
-            body.resize(self.layout.length, 0);
-            for (f, indices) in self.layout.fields.iter().zip(&self.indices) {
+            body.resize(
+                selected.as_ref().map_or(self.layout.length, |s| s.length),
+                0,
+            );
+            let active = selected
+                .as_ref()
+                .map_or(all_fields.as_slice(), |s| &s.fields);
+            for &i in active {
+                let f = &self.layout.fields[i];
+                let indices = &self.indices[i];
                 let result = (|| -> Result<()> {
                     if f.kind == FieldType::String {
                         let column = batch.column(indices[0]);

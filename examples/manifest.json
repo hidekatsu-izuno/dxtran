@@ -204,6 +204,54 @@
     ]
   },
   {
+    "directory": "conditional_records",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.csv": "expected/records.csv",
+          "out/records.dat": "expected/records.dat",
+          "out/records.rdw": "expected/records.rdw"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/fixed_readback.csv": "expected/records.csv",
+          "out/rdw_readback.csv": "expected/records.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "checks",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.csv": "expected/records.csv"
+        }
+      },
+      {
+        "file": "input_abend.yml",
+        "exit_code": 3,
+        "scan_exit_code": 3,
+        "diagnostic": "入力金額が負のため異常終了します。",
+        "absent": [
+          "out/input_abend.csv"
+        ]
+      },
+      {
+        "file": "output_abend.yml",
+        "exit_code": 5,
+        "diagnostic": "変換後の金額が負のため異常終了します。",
+        "absent": [
+          "out/output_abend.csv"
+        ]
+      }
+    ]
+  },
+  {
     "directory": "errors",
     "jobs": [
       {

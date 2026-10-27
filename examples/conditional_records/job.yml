@@ -1,0 +1,34 @@
+input:
+  - id: records
+    format: fixed
+    path: data/records.dat
+    encoding: utf-8
+    fixed: {record_separator: lf, record_length: 16}
+    fields: {import: ./fields.yml}
+output:
+  # 全レコード種別の列を公開し、該当しない列は NULL として出力する。
+  - id: decoded
+    sql: SELECT * FROM records
+    format: csv
+    path: out/records.csv
+    encoding: utf-8
+    mode: overwrite
+
+  # SQL結果に対して同じ when を評価し、元の16バイトの配置へ戻す。
+  - id: fixed_copy
+    sql: SELECT * FROM records
+    format: fixed
+    path: out/records.dat
+    encoding: utf-8
+    mode: overwrite
+    fixed: {record_separator: lf, record_length: 16}
+    fields: {import: ./fields.yml}
+
+  # RDWでも同じ条件付き項目定義を使える。offset はRDWを除いた本体基準。
+  - id: rdw_copy
+    sql: SELECT * FROM records
+    format: rdw
+    path: out/records.rdw
+    encoding: utf-8
+    mode: overwrite
+    fields: {import: ./fields.yml}

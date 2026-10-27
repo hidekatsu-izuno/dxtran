@@ -1,6 +1,6 @@
 # 入出力の組み合わせサンプル
 
-固定長・CSV・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。14ディレクトリに25ジョブ（正常系20、異常系5）があります。
+固定長・CSV・RDW・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。16ディレクトリに30ジョブ（正常系23、異常系7）があります。
 
 | ディレクトリ | 入力 → 出力 | 確認する内容 |
 | --- | --- | --- |
@@ -17,6 +17,8 @@
 | [empty](empty/job.yml) | CSV / 固定長 → CSV / 固定長 | 0件入力、ヘッダーのみ、ヘッダーなし、0バイトの固定長出力 |
 | [parquet](parquet/job.yml) | CSV → Parquet → CSV | スキーマ・Decimal・バイナリ・NULL・空文字・改行・元順の保持、Zstd圧縮、fields / encoding なしの読み戻し |
 | [compression](compression/job.yml) | gzip CSV / 固定長 → gzip / zstd → CSV | 明示したcompression、UTF-8 / CP932、NULL・空文字・Decimal・バイナリ・項目内改行、4種類の圧縮出力の読み戻し |
+| [conditional_records](conditional_records/job.yml) | 固定長 → CSV / 固定長 / RDW → CSV | SQL式の `when` によるヘッダー・明細・トレーラーの領域共有、非該当列のNULL、入出力の共通定義・読み戻し |
+| [checks](checks/job.yml) | CSV → CSV / 異常終了 | 入出力の `check`、SQL条件、warn → syserr / info → sysout、入力・出力の error による異常終了 |
 | [errors](errors) | CSV / 固定長 → エラー | 閉じていない引用符、短い固定長レコード、文字幅超過、scale による精度喪失、CP932 に変換できない文字 |
 
 各サンプルの `data/` が入力、`expected/` が期待値、実行で生成される `out/` が出力です。固定長の `.hex` はバイト列を表示する補助ファイルです。`readback.yml` がある場合は `job.yml` の後に実行します。全23型の共通レイアウトは [layouts/all_types.yml](layouts/all_types.yml) で、1レコード132バイトです。
@@ -62,6 +64,57 @@ cmp examples/compression/expected/fixed.csv examples/compression/out/fixed_gzip.
 cmp examples/compression/expected/fixed.csv examples/compression/out/fixed_zstd.csv
 ```
 
+## レコード条件で項目定義を切り替える
+
+[conditional_records/fields.yml](conditional_records/fields.yml) は、先頭1バイトの `record_type` を共通項目として、同じ16バイトのレコードを3通りに解釈します。
+
+| 種別 | `when` の例 | 残り15バイトの内容 |
+| --- | --- | --- |
+| H | `record_type = 'H'` | 日付8バイト + 送信元7バイト |
+| D | `record_type IN ('D')` | 顧客ID7バイト + 金額8バイト |
+| T | `record_type = 'T'` | 明細件数7バイト + 合計金額8バイト |
+
+`when` は Boolean の SQL 式です。`AND` / `OR` / `IN` やスカラー関数を使えます。入力の条件式は `when` のない共通項目を参照し、出力では SQL の結果列を参照します。該当しない入力列は NULL になり、出力では該当する項目だけを書きます。条件付き項目の領域を共有するため、各種別の最初の項目で `offset: 1` に戻しています。同じ行で有効な項目の隙間・重複はエラーになります。
+
+[job.yml](conditional_records/job.yml) は入力を CSV に展開し、同じ `fields.yml` を使って固定長とRDWにも書き出します。[readback.yml](conditional_records/readback.yml) はその両方をCSVに戻します。
+
+```sh
+cargo build --locked --bin dxt
+mkdir -p examples/conditional_records/out
+target/debug/dxt check examples/conditional_records/job.yml --scan
+target/debug/dxt run examples/conditional_records/job.yml --threads 4
+cmp examples/conditional_records/expected/records.csv examples/conditional_records/out/records.csv
+cmp examples/conditional_records/expected/records.dat examples/conditional_records/out/records.dat
+cmp examples/conditional_records/expected/records.rdw examples/conditional_records/out/records.rdw
+target/debug/dxt run examples/conditional_records/readback.yml --threads 4
+cmp examples/conditional_records/expected/records.csv examples/conditional_records/out/fixed_readback.csv
+cmp examples/conditional_records/expected/records.csv examples/conditional_records/out/rdw_readback.csv
+```
+
+## check で異常終了・ログ出力する
+
+[checks/job.yml](checks/job.yml) は入力の負の金額を `warn` で標準エラーへ、未指定の金額を `info` で標準出力へ記録し、処理を続けます。出力では SQL で金額を2倍した結果に対して `check` を実行します。メッセージは定義ID・レコード番号等を含む JSON ログです。`when` が FALSE / NULL のチェックは何もしません。
+
+```sh
+cargo build --locked --bin dxt
+mkdir -p examples/checks/out
+target/debug/dxt run examples/checks/job.yml --threads 4
+cmp examples/checks/expected/records.csv examples/checks/out/records.csv
+```
+
+`check` は1件のマップ、または複数件の配列で指定できます。入力ではデコード後の全公開列を参照し、出力では SQL 結果の列を参照します。複数のチェックはレコードごとに記載順に評価します。
+
+[input_abend.yml](checks/input_abend.yml) は負の入力金額で `error` を発生させて終了コード3になります。[output_abend.yml](checks/output_abend.yml) は変換後の負の金額で終了コード5になります。どちらもメッセージを標準エラーへ記録し、出力を公開しません。
+
+```sh
+target/debug/dxt run examples/checks/input_abend.yml
+# 終了コード3。out/input_abend.csv は作成されない。
+target/debug/dxt run examples/checks/output_abend.yml
+# 終了コード5。out/output_abend.csv は作成されない。
+```
+
+通常の `check` / `explain` は条件式を検証するだけでメッセージを出しません。`check --scan` は入力のチェックを実行し、出力のチェックは `run` で実行します。`check` を持つ入出力はログと異常終了位置の順序を保つため、レコード順に変換・検査します。
+
 ## 全サンプルを検証する
 
 ```sh
@@ -82,6 +135,8 @@ CSV・固定長の正常系は出力の全バイトを期待値と比較しま�
 | [width_overflow.yml](errors/width_overflow.yml) | 0 | 5 |
 | [precision_loss.yml](errors/precision_loss.yml) | 0 | 5 |
 | [unrepresentable.yml](errors/unrepresentable.yml) | 0 | 5 |
+| [input_abend.yml](checks/input_abend.yml) | 3 | 3 |
+| [output_abend.yml](checks/output_abend.yml) | 0 | 5 |
 
 `check --scan` は入力を走査しますが、出力値の変換は `run` で行います。上記の異常系も、通常の `check` と `explain` は成功する設定です。
 

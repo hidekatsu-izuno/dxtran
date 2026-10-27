@@ -34,7 +34,7 @@ fn decimal_codecs_preserve_sign_precision_and_zero_padding() {
                 let f = CompiledField::compile(
                     serde_json::from_value(spec).unwrap(),
                     Format::Fixed,
-                    true,
+                    dxtran::field::Direction::Output,
                     0,
                     TextEncoding::resolve("utf-8").unwrap(),
                 )
@@ -125,7 +125,7 @@ fn packed_accepts_only_specified_signs() {
         let f = CompiledField::compile(
             serde_json::from_value(json!({"name":"n","type":kind,"length":2})).unwrap(),
             Format::Fixed,
-            false,
+            dxtran::field::Direction::Input,
             0,
             TextEncoding::resolve("utf-8").unwrap(),
         )
@@ -196,14 +196,14 @@ fn all_23_types_have_independent_expected_bytes_and_null_defaults() {
         let f = CompiledField::compile(
             field,
             Format::Fixed,
-            true,
+            dxtran::field::Direction::Output,
             0,
             TextEncoding::resolve("utf-8").unwrap(),
         )
         .unwrap();
         let bytes = hex::decode(bytes).unwrap();
         let values = f.decode(&bytes).unwrap();
-        let expected = match f.kind {
+        let expected = match f.kind() {
             FieldType::String => vec![ScalarValue::Utf8(Some("AB".into()))],
             FieldType::Boolean => vec![ScalarValue::Boolean(Some(true))],
             FieldType::Binary => vec![ScalarValue::Binary(Some(vec![0, 255]))],
@@ -220,7 +220,7 @@ fn all_23_types_have_independent_expected_bytes_and_null_defaults() {
                 Some(1_792_931_696_123_456),
                 Some("UTC".into()),
             )],
-            _ => vec![ScalarValue::Decimal128(Some(123), f.precision, 0)],
+            _ => vec![ScalarValue::Decimal128(Some(123), f.precision(), 0)],
         };
         assert_eq!(values, expected, "{kind}");
         assert_eq!(f.encode(&expected, Format::Fixed).unwrap(), bytes, "{kind}");
@@ -239,7 +239,7 @@ fn null_regex_is_full_match_and_precedes_decimal_conversion() {
     let f = CompiledField::compile(
         field,
         Format::Fixed,
-        false,
+        dxtran::field::Direction::Input,
         0,
         TextEncoding::resolve("utf-8").unwrap(),
     )
@@ -259,7 +259,7 @@ fn large_bits_region_and_mixed_null_defaults() {
         let f = CompiledField::compile(
             field,
             Format::Fixed,
-            true,
+            dxtran::field::Direction::Output,
             0,
             TextEncoding::resolve("utf-8").unwrap(),
         )
@@ -292,7 +292,7 @@ fn multibyte_pad_cannot_split_characters() {
         let f = CompiledField::compile(
             field,
             Format::Fixed,
-            false,
+            dxtran::field::Direction::Input,
             0,
             TextEncoding::resolve(enc).unwrap(),
         )

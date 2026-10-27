@@ -1,10 +1,13 @@
+mod conditional;
+mod csv;
+mod output;
 use crate::{
-    config::{Dataset, Field, Format},
+    config::{Dataset, Format},
     encoding::TextEncoding,
     error::{Error, Result},
-    field::{CompiledField, FieldType},
+    field::{CompiledField, Direction},
 };
-use datafusion::arrow::datatypes::{DataType, Field as ArrowField, Schema, SchemaRef, TimeUnit};
+use datafusion::arrow::datatypes::{Field as ArrowField, Schema, SchemaRef};
 use std::{collections::BTreeSet, sync::Arc};
 
 #[derive(Clone, Debug)]
@@ -17,16 +20,29 @@ pub struct RecordLayout {
     pub max_record_length: usize,
     pub format: Format,
     pub encoding: TextEncoding,
+    pub(crate) conditional: Option<conditional::ConditionalLayout>,
+    pub(crate) checks: crate::check::Checks,
 }
 impl RecordLayout {
-    pub fn compile(d: &Dataset, output: bool, result: Option<SchemaRef>) -> Result<Self> {
+    pub fn input(dataset: &Dataset) -> Result<Self> {
+        let mut layout = Self::compile(dataset, None)?;
+        layout.checks = crate::check::Checks::compile(dataset, layout.schema.clone(), false)?;
+        Ok(layout)
+    }
+    pub fn output(dataset: &Dataset, schema: SchemaRef) -> Result<Self> {
+        let mut layout = Self::compile(dataset, Some(schema.clone()))?;
+        layout.checks = crate::check::Checks::compile(dataset, schema, true)?;
+        Ok(layout)
+    }
+    fn compile(d: &Dataset, result: Option<SchemaRef>) -> Result<Self> {
+        let output = result.is_some();
         if d.format == Format::Parquet {
             if d.compression.is_some() {
                 return Err(Error::config(
                     "top-level compression is for csv/fixed/rdw; use parquet.compression for Parquet output",
                 ));
             }
-            return crate::parquet_io::layout(d, output, result);
+            return crate::parquet_io::layout(d, result);
         }
         let encoding = TextEncoding::resolve(&d.encoding)?;
         if (d.csv.is_some() && d.format != Format::Csv)
@@ -85,78 +101,13 @@ impl RecordLayout {
         } else {
             vec![]
         };
-        let mut specs = d.fields.clone();
-        if output && d.format == Format::Csv {
-            let schema = result.as_ref().unwrap();
-            let mut names = BTreeSet::new();
-            for f in &specs {
-                let name = f
-                    .name
-                    .as_deref()
-                    .ok_or_else(|| Error::config("CSV output field name required"))?;
-                if !names.insert(name) || schema.index_of(name).is_err() {
-                    return Err(Error::config(format!(
-                        "unknown or duplicate CSV output column '{name}'"
-                    )));
-                }
-            }
-            specs = schema
-                .fields()
-                .iter()
-                .map(|column| {
-                    let mut f = specs
-                        .iter()
-                        .find(|f| f.name.as_deref() == Some(column.name()))
-                        .cloned()
-                        .unwrap_or_else(|| Field {
-                            name: Some(column.name().clone()),
-                            ..Default::default()
-                        });
-                    let inferred = match column.data_type() {
-                        DataType::Boolean => "boolean",
-                        DataType::Date32 => "date",
-                        DataType::Time64(_) => "time",
-                        DataType::Timestamp(_, _) => "timestamp",
-                        DataType::Binary
-                        | DataType::LargeBinary
-                        | DataType::BinaryView
-                        | DataType::FixedSizeBinary(_) => "binary",
-                        DataType::Decimal128(_, _) => "decimal",
-                        _ => "string",
-                    };
-                    if f.kind.is_none() {
-                        f.kind = Some(inferred.into());
-                    }
-                    if let DataType::Decimal128(p, s) = column.data_type()
-                        && *s >= 0
-                    {
-                        f.precision.get_or_insert(*p);
-                        f.scale.get_or_insert(*s as u8);
-                    }
-                    if let DataType::Time64(u) | DataType::Timestamp(u, _) = column.data_type()
-                        && f.unit.is_none()
-                    {
-                        f.unit = Some(
-                            match u {
-                                TimeUnit::Second => "s",
-                                TimeUnit::Millisecond => "ms",
-                                TimeUnit::Microsecond => "us",
-                                TimeUnit::Nanosecond => "ns",
-                            }
-                            .into(),
-                        );
-                    }
-                    if let DataType::Timestamp(_, zone) = column.data_type()
-                        && !f.timezone_set
-                    {
-                        f.timezone = zone.as_ref().map(ToString::to_string);
-                        f.timezone_set = true;
-                    }
-                    f.nullable.get_or_insert(column.is_nullable());
-                    f
-                })
-                .collect();
+        if d.fields.iter().any(|f| f.when.is_some()) {
+            return conditional::compile(d, result, encoding, separator, max);
         }
+        let specs = match (d.format, result.as_ref()) {
+            (Format::Csv, Some(schema)) => csv::output_fields(d, schema)?,
+            _ => d.fields.clone(),
+        };
         if d.format != Format::Csv && specs.is_empty() {
             return Err(Error::config("physical fields must not be empty"));
         }
@@ -168,7 +119,17 @@ impl RecordLayout {
         let mut ranges = vec![];
         for (i, spec) in specs.into_iter().enumerate() {
             let offset = spec.offset.unwrap_or(end);
-            let f = CompiledField::compile(spec, d.format, output, offset, encoding)?;
+            let f = CompiledField::compile(
+                spec,
+                d.format,
+                if output {
+                    Direction::Output
+                } else {
+                    Direction::Input
+                },
+                offset,
+                encoding,
+            )?;
             if d.format != Format::Csv {
                 if let Some(n) = f.length {
                     end = offset
@@ -232,117 +193,20 @@ impl RecordLayout {
             max_record_length: max,
             format: d.format,
             encoding,
+            conditional: None,
+            checks: Default::default(),
         };
         if let Some(result) = result {
             layout.validate_output(d, &result)?;
         }
         Ok(layout)
     }
-    fn validate_output(&self, d: &Dataset, schema: &Schema) -> Result<()> {
-        let mut names = BTreeSet::new();
-        for f in schema.fields() {
-            if !crate::config::identifier(f.name()) || !names.insert(f.name()) {
-                return Err(Error::config(
-                    "SQL output column names must be unique public identifiers",
-                ));
-            }
-        }
-        let physical: BTreeSet<_> = self.fields.iter().flat_map(CompiledField::names).collect();
-        if d.format != Format::Csv && physical != names.iter().map(|s| (*s).clone()).collect() {
-            return Err(Error::config(
-                "physical output fields must match the SQL column name set exactly",
-            ));
-        }
-        for f in &self.fields {
-            for name in f.names() {
-                let col = schema
-                    .field_with_name(&name)
-                    .map_err(|e| Error::config(e.to_string()))?;
-                let explicit = d
-                    .fields
-                    .iter()
-                    .find(|s| s.name.as_deref() == Some(&name))
-                    .is_some_and(|s| s.kind.is_some());
-                if let DataType::Timestamp(_, zone) = col.data_type()
-                    && matches!(f.kind, FieldType::Timestamp)
-                    && zone.is_some() != matches!(f.data_type(), DataType::Timestamp(_, Some(_)))
-                {
-                    return Err(Error::config(
-                        "timestamp timezone presence requires explicit SQL conversion",
-                    ));
-                }
-                if d.format == Format::Csv && !explicit {
-                    if !csv_type(col.data_type()) {
-                        return Err(Error::config(format!(
-                            "unsupported CSV SQL type {:?}",
-                            col.data_type()
-                        )));
-                    }
-                    continue;
-                }
-                let t = col.data_type();
-                use FieldType::*;
-                let compatible = match f.kind {
-                    String => {
-                        matches!(t, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
-                    }
-                    Decimal | Zoned | Lzoned | Tzoned | Uzoned | Packed | Upacked | Npacked => {
-                        matches!(t, DataType::Decimal128(_, _))
-                    }
-                    Boolean | Bits => *t == DataType::Boolean,
-                    Date => *t == DataType::Date32,
-                    Time => matches!(t, DataType::Time64(_)),
-                    Timestamp => {
-                        matches!(t,DataType::Timestamp(_,z) if z.is_some()==matches!(f.data_type(),DataType::Timestamp(_,Some(_))))
-                    }
-                    Binary => matches!(
-                        t,
-                        DataType::Binary
-                            | DataType::BinaryView
-                            | DataType::LargeBinary
-                            | DataType::FixedSizeBinary(_)
-                    ),
-                    IntLe | IntBe | UintLe | UintBe => t.is_integer(),
-                    FloatLe | FloatBe | HfloatLe | HfloatBe => {
-                        matches!(t, DataType::Float32 | DataType::Float64)
-                    }
-                    Filler => true,
-                };
-                if !compatible {
-                    return Err(Error::config(format!(
-                        "output column '{name}' type {t:?} is incompatible with {:?}; use SQL CAST",
-                        f.kind
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-fn csv_type(t: &DataType) -> bool {
-    matches!(
-        t,
-        DataType::Utf8
-            | DataType::Utf8View
-            | DataType::LargeUtf8
-            | DataType::Boolean
-            | DataType::Date32
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, _)
-            | DataType::Binary
-            | DataType::BinaryView
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_)
-            | DataType::Decimal128(_, _)
-            | DataType::Float32
-            | DataType::Float64
-    ) || t.is_integer()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Length;
+    use crate::config::{Field, Length};
     #[test]
     fn multibyte_padding() {
         let f = CompiledField::compile(
@@ -353,7 +217,7 @@ mod tests {
                 ..Default::default()
             },
             Format::Fixed,
-            true,
+            crate::field::Direction::Output,
             0,
             TextEncoding::resolve("utf-16le").unwrap(),
         )

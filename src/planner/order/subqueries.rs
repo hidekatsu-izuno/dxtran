@@ -1,11 +1,19 @@
-use super::*;
+use super::{OrderPlanner, key_column};
+use crate::error::Result;
 use datafusion::{
+    common::{
+        Column, JoinType,
+        tree_node::{Transformed, TreeNode},
+    },
     logical_expr::{
-        expr::{Exists, InSubquery},
+        Expr, LogicalPlan, LogicalPlanBuilder,
+        expr::{Exists, InSubquery, Sort as SortExpr},
+        lit,
         utils::conjunction,
     },
     optimizer::decorrelate::PullUpCorrelatedExpr,
 };
+use std::{collections::BTreeSet, sync::Arc};
 
 // DF55 infers scalar nullability from the selected column, even though zero
 // rows must produce NULL. An outer join against a single empty tuple makes

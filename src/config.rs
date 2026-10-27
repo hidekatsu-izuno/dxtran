@@ -361,6 +361,7 @@ pub struct Bit {
 #[serde(deny_unknown_fields)]
 pub struct Field {
     pub name: Option<String>,
+    pub when: Option<String>,
     pub offset: Option<usize>,
     pub length: Option<Length>,
     #[serde(rename = "type")]
@@ -398,6 +399,38 @@ pub struct Field {
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Check {
+    pub when: String,
+    pub level: CheckLevel,
+    pub message: String,
+    #[serde(skip)]
+    pub origin: Option<Origin>,
+    #[serde(skip)]
+    pub when_origin: Option<Origin>,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckLevel {
+    Error,
+    Warn,
+    Info,
+}
+fn checks<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<Check>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Checks {
+        Single(Check),
+        Many(Vec<Check>),
+    }
+    Ok(match Checks::deserialize(deserializer)? {
+        Checks::Single(check) => vec![check],
+        Checks::Many(checks) => checks,
+    })
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Dataset {
     pub id: String,
     pub format: Format,
@@ -407,6 +440,8 @@ pub struct Dataset {
     pub encoding: String,
     #[serde(default)]
     pub fields: Vec<Field>,
+    #[serde(default, deserialize_with = "checks")]
+    pub check: Vec<Check>,
     pub csv: Option<Csv>,
     pub fixed: Option<Fixed>,
     pub rdw: Option<Rdw>,
@@ -514,6 +549,16 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
             let mut d: Dataset = n.decode()?;
             d.origin = Some(n.origin.clone());
             d.sql_origin = n.get("sql").map(|n| n.origin.clone());
+            if let Some(raw) = n.get("check") {
+                let nodes = match &raw.kind {
+                    Kind::Sequence(nodes) => nodes.iter().collect::<Vec<_>>(),
+                    _ => vec![raw],
+                };
+                for (check, raw) in d.check.iter_mut().zip(nodes) {
+                    check.origin = Some(raw.origin.clone());
+                    check.when_origin = raw.get("when").map(|n| n.origin.clone());
+                }
+            }
             if d.path.as_os_str().is_empty() {
                 return Err(Error::config("path must not be empty").context(&path.origin));
             }

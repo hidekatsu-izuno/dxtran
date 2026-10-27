@@ -1,0 +1,5 @@
+record_type,business_date,sender,customer_id,amount,detail_count,total_amount
+H,2026-10-28,DXTRAN,,,,
+D,,,0000001,12.30,,
+D,,,0000002,-0.50,,
+T,,,,,2,11.80

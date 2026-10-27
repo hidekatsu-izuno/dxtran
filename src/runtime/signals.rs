@@ -1,23 +1,27 @@
 use crate::error::{Error, Result};
-use std::{
-    sync::{
-        Arc, LazyLock,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread::JoinHandle,
-    time::Duration,
+use std::sync::{
+    Arc, LazyLock,
+    atomic::{AtomicBool, Ordering},
 };
+#[cfg(unix)]
+use std::{thread::JoinHandle, time::Duration};
+
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::Relaxed)
 }
 pub struct Signals {
+    #[cfg(unix)]
     stop: Arc<AtomicBool>,
+    #[cfg(unix)]
     thread: Option<JoinHandle<()>>,
+    #[cfg(windows)]
+    task: tokio::task::JoinHandle<()>,
     #[cfg(unix)]
     registrations: Vec<signal_hook::SigId>,
 }
 impl Signals {
+    #[cfg(unix)]
     pub fn new() -> Result<(Self, tokio::sync::oneshot::Receiver<()>)> {
         INTERRUPTED.store(false, Ordering::Relaxed);
         let mut signals = Self {
@@ -49,17 +53,36 @@ impl Signals {
         );
         Ok((signals, receiver))
     }
+    #[cfg(windows)]
+    pub fn new() -> Result<(Self, tokio::sync::oneshot::Receiver<()>)> {
+        INTERRUPTED.store(false, Ordering::Relaxed);
+        let mut ctrl_c = tokio::signal::windows::ctrl_c().map_err(|e| Error::sql(e.to_string()))?;
+        let mut ctrl_break =
+            tokio::signal::windows::ctrl_break().map_err(|e| Error::sql(e.to_string()))?;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            tokio::select! { _ = ctrl_c.recv() => (), _ = ctrl_break.recv() => () }
+            INTERRUPTED.store(true, Ordering::Relaxed);
+            let _ = sender.send(());
+        });
+        Ok((Self { task }, receiver))
+    }
 }
 impl Drop for Signals {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-        // At CLI shutdown, remove our actions; signal-hook keeps its OS handlers installed.
+        #[cfg(windows)]
+        self.task.abort();
         #[cfg(unix)]
-        for registration in self.registrations.drain(..) {
-            signal_hook::low_level::unregister(registration);
+        {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+            // At CLI shutdown, remove our actions; signal-hook keeps its OS handlers installed.
+            #[cfg(unix)]
+            for registration in self.registrations.drain(..) {
+                signal_hook::low_level::unregister(registration);
+            }
         }
     }
 }

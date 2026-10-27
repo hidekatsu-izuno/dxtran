@@ -1,0 +1,38 @@
+# 16バイトの本体をレコード種別に応じて再定義する。
+# offset は配列の直前の項目に続くため、各レコード種別の先頭で明示する。
+- {name: record_type, offset: 0, length: 1}
+
+# ヘッダー: H + 日付8バイト + 送信元7バイト
+- name: business_date
+  offset: 1
+  length: 8
+  type: date
+  datetime_pattern: yyyyMMdd
+  when: "record_type = 'H'"
+- {name: sender, length: 7, when: "record_type = 'H'"}
+
+# 明細: D + 顧客ID7バイト + 金額8バイト
+- name: customer_id
+  offset: 1
+  length: 7
+  when: "record_type IN ('D')"
+- name: amount
+  length: 8
+  type: decimal
+  precision: 7
+  scale: 2
+  when: "record_type = 'D' AND length(record_type) = 1"
+
+# トレーラー: T + 件数7バイト + 合計金額8バイト
+- name: detail_count
+  offset: 1
+  length: 7
+  type: decimal
+  precision: 7
+  when: "record_type = 'T'"
+- name: total_amount
+  length: 8
+  type: decimal
+  precision: 7
+  scale: 2
+  when: "record_type = 'T'"

@@ -1,0 +1,13 @@
+input:
+  - import: ./input.yml
+output:
+  - id: result
+    sql: SELECT id, amount * 2 AS amount FROM records
+    format: csv
+    path: out/output_abend.csv
+    encoding: utf-8
+    mode: overwrite
+    check:
+      when: "amount < 0"
+      level: error
+      message: "変換後の金額が負のため異常終了します。"
