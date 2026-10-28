@@ -10,6 +10,12 @@ use std::{collections::BTreeSet, ffi::OsString, path::PathBuf};
     about = "SQL batch conversion for CSV, fixed, RDW and Parquet files"
 )]
 pub struct Cli {
+    #[arg(
+        long,
+        global = true,
+        help = "Allow trusted Lua/FFI with full process privileges, including during check/explain (not a sandbox)"
+    )]
+    pub(super) allow_lua: bool,
     #[command(subcommand)]
     pub(super) command: Command,
     #[arg(skip)]

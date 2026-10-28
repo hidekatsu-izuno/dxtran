@@ -40,5 +40,7 @@ pub(super) fn context(resources: &Resources, spill: Option<&Path>) -> Result<Ses
         .with_default_features()
         .with_query_planner(Arc::new(planner::unnest::OrderedQueryPlanner))
         .build();
-    Ok(SessionContext::new_with_state(state))
+    let context = SessionContext::new_with_state(state);
+    crate::functions::register(&context);
+    Ok(context)
 }

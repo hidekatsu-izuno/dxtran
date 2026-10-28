@@ -14,8 +14,19 @@ pub enum Direction {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Trim {
     None,
+    Left,
     Right,
     Both,
+}
+impl Trim {
+    fn apply(self, text: &str, pad: char) -> &str {
+        match self {
+            Self::None => text,
+            Self::Left => text.trim_start_matches(pad),
+            Self::Right => text.trim_end_matches(pad),
+            Self::Both => text.trim_matches(pad),
+        }
+    }
 }
 
 use crate::{
@@ -205,10 +216,14 @@ impl CompiledField {
         ScalarValue::try_from(&self.data_type()).unwrap()
     }
     pub fn trim_text<'a>(&self, s: &'a str) -> &'a str {
-        match self.trim {
-            Trim::Right => s.trim_end_matches(self.pad),
-            Trim::Both => s.trim_matches(self.pad),
-            _ => s,
+        self.trim.apply(s, self.pad)
+    }
+    pub(crate) fn trim_output_text<'a>(&self, s: &'a str) -> &'a str {
+        // Output keeps its existing behavior unless trim is explicitly configured.
+        if self.spec.trim.is_some() {
+            self.trim_text(s)
+        } else {
+            s
         }
     }
     pub fn text_null(&self, s: &str) -> bool {
@@ -570,8 +585,10 @@ impl CompiledField {
             match value {
                 ScalarValue::Utf8(Some(s))
                 | ScalarValue::LargeUtf8(Some(s))
-                | ScalarValue::Utf8View(Some(s)) => self.padded_into(s, bytes)?,
-                _ => self.padded_into(&self.format_text(value)?, bytes)?,
+                | ScalarValue::Utf8View(Some(s)) => {
+                    self.padded_into(self.trim_output_text(s), bytes)?
+                }
+                _ => self.padded_into(self.trim_output_text(&self.format_text(value)?), bytes)?,
             }
         } else if matches!(
             self.kind,
@@ -637,7 +654,7 @@ impl CompiledField {
         Ok(())
     }
     pub fn encode_string_into(&self, value: &str, bytes: &mut Vec<u8>) -> Result<()> {
-        self.padded_into(value, bytes)?;
+        self.padded_into(self.trim_output_text(value), bytes)?;
         if self.is_null_bytes(bytes)? {
             return Err(Error::output("non-NULL value collides with NULL rule"));
         }

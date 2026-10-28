@@ -1,12 +1,15 @@
 mod check;
 mod compression;
 pub mod config;
+mod datetime;
 pub mod encoding;
 pub mod error;
 pub mod field;
 mod filesystem;
 pub mod framing;
+pub mod functions;
 pub mod layout;
+mod lua;
 mod parallel;
 mod parquet_io;
 pub mod planner;

@@ -1,0 +1,4 @@
+customer_id,customer_name,region,credit_limit,score,payload
+0001,東京商事,east,9223372036854775807,1.5,00ff
+0002,"",west,-9223372036854775808,2.25,""
+0003,,,0,0,

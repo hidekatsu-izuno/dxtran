@@ -26,6 +26,7 @@ enum Reader {
     Csv(CsvReader<TextReader<crate::compression::Input>>),
     Physical(BufReader<crate::compression::Input>),
     Parquet(Box<crate::parquet_io::Input>),
+    Lua(Box<super::lua::Input>),
 }
 pub struct InputReader {
     pub(super) dataset: Dataset,
@@ -43,6 +44,22 @@ pub struct InputReader {
 }
 impl InputReader {
     pub fn open(dataset: &Dataset, layout: &RecordLayout) -> Result<Self> {
+        if dataset.format == Format::Lua {
+            return Ok(Self {
+                dataset: dataset.clone(),
+                layout: layout.clone(),
+                reader: Reader::Lua(Box::new(super::lua::Input::load(dataset, layout)?)),
+                record: 0,
+                byte_position: 0,
+                body: Vec::new(),
+                cells: CsvRecord::default(),
+                record_ready: false,
+                record_position: 0,
+                row_base_size: 0,
+                physical_row_bound: 0,
+                checked_row: None,
+            });
+        }
         let file = File::open(&dataset.path)
             .map_err(|e| Error::input(e.to_string()).context(dataset.path.display()))?;
         if !file
@@ -131,8 +148,8 @@ impl InputReader {
     }
     pub fn next_row_into(&mut self, row: &mut Vec<ScalarValue>) -> Result<bool> {
         row.clear();
-        if matches!(self.reader, Reader::Parquet(_)) {
-            let Some(batch) = self.parquet_batch(self.layout.schema.clone(), None, 1)? else {
+        if matches!(self.reader, Reader::Parquet(_) | Reader::Lua(_)) {
+            let Some(batch) = self.native_batch(self.layout.schema.clone(), None, 1)? else {
                 return Ok(false);
             };
             for array in batch.columns() {
@@ -164,7 +181,7 @@ impl InputReader {
             ))
         };
         match &mut self.reader {
-            Reader::Parquet(_) => unreachable!("parquet uses native Arrow batches"),
+            Reader::Parquet(_) | Reader::Lua(_) => unreachable!("native Arrow batches"),
             Reader::Csv(reader) => {
                 let first_line = reader.line;
                 if !reader.read_record(&mut self.cells).map_err(context)? {
@@ -245,7 +262,7 @@ impl InputReader {
                 let text = if value.is_empty() && !was_quoted {
                     None
                 } else {
-                    Some(value)
+                    Some(field.trim_text(value))
                 };
                 field.parse_text_to(text, values).map_err(|e| {
                     context(e.context(format!("column {}", field.spec.name.as_deref().unwrap())))
@@ -279,8 +296,8 @@ impl InputReader {
         schema: SchemaRef,
         dataset_no: Option<usize>,
     ) -> Result<Option<RecordBatch>> {
-        if matches!(self.reader, Reader::Parquet(_)) {
-            return self.parquet_batch(schema, dataset_no, 8192);
+        if matches!(self.reader, Reader::Parquet(_) | Reader::Lua(_)) {
+            return self.native_batch(schema, dataset_no, 8192);
         }
         let mut columns: Vec<_> = schema
             .fields()
@@ -348,16 +365,18 @@ impl InputReader {
         .map_err(DataFusionError::from)
         .map_err(Error::from)
     }
-    fn parquet_batch(
+    fn native_batch(
         &mut self,
         schema: SchemaRef,
         dataset_no: Option<usize>,
         max_rows: usize,
     ) -> Result<Option<RecordBatch>> {
-        let Reader::Parquet(reader) = &mut self.reader else {
-            unreachable!()
+        let batch = match &mut self.reader {
+            Reader::Parquet(reader) => reader.take(max_rows),
+            Reader::Lua(reader) => reader.take(max_rows),
+            _ => unreachable!(),
         };
-        let Some(batch) = reader.take(max_rows).map_err(|e| {
+        let Some(batch) = batch.map_err(|e| {
             e.context(format!(
                 "input {} {} record {}",
                 self.dataset.id,
@@ -368,7 +387,9 @@ impl InputReader {
         else {
             return Ok(None);
         };
-        self.layout.checks.batch(&batch, self.record)?;
+        if self.dataset.format != Format::Lua {
+            self.layout.checks.batch(&batch, self.record)?;
+        }
         let mut arrays = batch.columns().to_vec();
         if let Some(dataset) = dataset_no {
             let mut keys = StringBuilder::with_capacity(batch.num_rows(), batch.num_rows() * 32);

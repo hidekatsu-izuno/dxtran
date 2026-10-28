@@ -1,1 +1,3 @@
 **/out/
+/sqlite/data/*.sqlite
+/sqlite/data/*.sqlite-*

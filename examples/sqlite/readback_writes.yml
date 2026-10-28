@@ -1,0 +1,41 @@
+input:
+  - id: appended
+    format: lua
+    path: sqlite.lua
+    lua:
+      libraries: {sqlite3: libsqlite3.so.0}
+      options:
+        database: data/customers.sqlite
+        query: SELECT * FROM customer_append ORDER BY customer_id
+    fields:
+      - {name: customer_id}
+      - {name: customer_name, nullable: true}
+      - {name: region, nullable: true}
+  - id: overwritten
+    format: lua
+    path: sqlite.lua
+    lua:
+      libraries: {sqlite3: libsqlite3.so.0}
+      options:
+        database: data/customers.sqlite
+        query: SELECT * FROM customer_overwrite ORDER BY customer_id
+    fields:
+      - {name: customer_id}
+      - {name: customer_name, nullable: true}
+      - {name: region, nullable: true}
+  - id: merged
+    format: lua
+    path: sqlite.lua
+    lua:
+      libraries: {sqlite3: libsqlite3.so.0}
+      options:
+        database: data/customers.sqlite
+        query: SELECT * FROM customer_merge ORDER BY customer_id
+    fields:
+      - {name: customer_id}
+      - {name: customer_name, nullable: true}
+      - {name: region, nullable: true}
+output:
+  - {id: appended, format: csv, path: out/appended.csv, mode: overwrite, encoding: utf-8, sql: 'SELECT * FROM appended'}
+  - {id: overwritten, format: csv, path: out/overwritten.csv, mode: overwrite, encoding: utf-8, sql: 'SELECT * FROM overwritten'}
+  - {id: merged, format: csv, path: out/merged.csv, mode: overwrite, encoding: utf-8, sql: 'SELECT * FROM merged'}

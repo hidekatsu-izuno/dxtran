@@ -119,7 +119,7 @@ impl Chunk {
                 let text = if value.is_empty() && !quoted {
                     None
                 } else {
-                    Some(value)
+                    Some(field.trim_text(value))
                 };
                 field.parse_text_to(text, &mut row).map_err(|e| {
                     e.context(format!(

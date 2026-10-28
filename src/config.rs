@@ -260,6 +260,34 @@ pub enum Format {
     Fixed,
     Rdw,
     Parquet,
+    Lua,
+}
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Lua {
+    #[serde(default)]
+    pub libraries: BTreeMap<String, String>,
+    #[serde(default)]
+    pub options: BTreeMap<String, Value>,
+    #[serde(skip)]
+    pub base_dir: PathBuf,
+    #[serde(skip)]
+    pub(crate) job: Option<std::sync::Arc<crate::lua::JobState>>,
+    #[serde(skip)]
+    pub(crate) allow_unsafe: bool,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobLua {
+    pub path: Option<PathBuf>,
+    #[serde(default)]
+    pub variables: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub libraries: BTreeMap<String, String>,
+    #[serde(default)]
+    pub options: BTreeMap<String, Value>,
+    #[serde(skip)]
+    pub base_dir: PathBuf,
 }
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -370,6 +398,7 @@ pub struct Field {
     pub scale: Option<u8>,
     pub zone: Option<String>,
     pub nullable: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_trim")]
     pub trim: Option<String>,
     pub pad_char: Option<String>,
     pub null_if: Option<Vec<String>>,
@@ -396,6 +425,26 @@ pub struct Field {
     pub origin: Option<Origin>,
     #[serde(skip)]
     pub origins: BTreeMap<String, Origin>,
+}
+
+fn deserialize_trim<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum TrimSetting {
+        Side(String),
+        Disabled(bool),
+    }
+    match Option::<TrimSetting>::deserialize(deserializer)? {
+        // Keep the existing string representation and the legacy `none` spelling.
+        Some(TrimSetting::Disabled(false)) => Ok(Some("none".into())),
+        Some(TrimSetting::Disabled(true)) => Err(serde::de::Error::custom(
+            "trim must be false, left, right or both",
+        )),
+        Some(TrimSetting::Side(side)) => Ok(Some(side)),
+        None => Ok(None),
+    }
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -446,12 +495,23 @@ pub struct Dataset {
     pub fixed: Option<Fixed>,
     pub rdw: Option<Rdw>,
     pub parquet: Option<Parquet>,
+    pub lua: Option<Lua>,
     pub sql: Option<String>,
     pub mode: Option<String>,
     #[serde(skip)]
     pub origin: Option<Origin>,
     #[serde(skip)]
     pub sql_origin: Option<Origin>,
+}
+impl Dataset {
+    /// Allow this standalone dataset to execute trusted Lua with process privileges.
+    /// This also permits top-level execution during metadata validation.
+    /// For datasets belonging to a job, use `Job::allow_unsafe_lua` instead.
+    pub fn allow_unsafe_lua(&mut self) {
+        if self.format == Format::Lua {
+            self.lua.get_or_insert_default().allow_unsafe = true;
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -463,11 +523,35 @@ pub struct Process {
 }
 #[derive(Clone, Debug)]
 pub struct Job {
+    pub lua: Option<JobLua>,
+    pub(crate) lua_runtime: crate::lua::Runtime,
     pub input: Vec<Dataset>,
     pub process: Vec<Process>,
     pub output: Vec<Dataset>,
     pub hashes: BTreeMap<PathBuf, String>,
     pub expanded_hash: String,
+}
+impl Job {
+    /// Explicitly trust all Lua code and native dependencies used by this job.
+    /// Call only for operator-approved code; YAML cannot grant this permission.
+    pub fn allow_unsafe_lua(&mut self) {
+        self.lua_runtime.allow_unsafe_lua();
+        for dataset in self.input.iter_mut().chain(&mut self.output) {
+            dataset.allow_unsafe_lua();
+        }
+    }
+    pub(crate) fn check_lua_permission(&self) -> Result<()> {
+        if (self.lua.is_some() && !self.lua_runtime.is_allowed())
+            || self.input.iter().chain(&self.output).any(|d| {
+                d.format == Format::Lua && !d.lua.as_ref().is_some_and(|lua| lua.allow_unsafe)
+            })
+        {
+            return Err(Error::config(
+                "Lua execution is disabled; --allow-lua is required for trusted scripts, including check/explain. Lua and FFI run with the process's full privileges",
+            ));
+        }
+        Ok(())
+    }
 }
 #[derive(Default, Debug)]
 pub struct PathOverrides {
@@ -563,6 +647,40 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
                 return Err(Error::config("path must not be empty").context(&path.origin));
             }
             d.path = path.origin.file.parent().unwrap().join(&d.path);
+            if let Some(lua) = &mut d.lua {
+                let raw = n.get("lua").unwrap();
+                lua.base_dir = raw
+                    .get("options")
+                    .unwrap_or(raw)
+                    .origin
+                    .file
+                    .parent()
+                    .unwrap()
+                    .into();
+                if let Some(Node {
+                    kind: Kind::Mapping(libraries),
+                    ..
+                }) = raw.get("libraries")
+                {
+                    for (name, library) in &mut lua.libraries {
+                        if library.is_empty() {
+                            return Err(Error::config("lua library must not be empty")
+                                .context(&libraries[name].origin));
+                        }
+                        if library.contains('/') || library.contains('\\') {
+                            *library = libraries[name]
+                                .origin
+                                .file
+                                .parent()
+                                .unwrap()
+                                .join(&*library)
+                                .to_str()
+                                .ok_or_else(|| Error::config("lua library path must be UTF-8"))?
+                                .into();
+                        }
+                    }
+                }
+            }
             if let Some(Node {
                 kind: Kind::Sequence(fields),
                 ..
@@ -597,7 +715,7 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
                         .context(&node.origin));
                     }
                 }
-            } else if n.get("encoding").is_none() {
+            } else if d.format != Format::Lua && n.get("encoding").is_none() {
                 return Err(Error::config("encoding is required").context(&n.origin));
             }
             if !output && d.format != Format::Parquet && d.fields.is_empty() {
@@ -606,6 +724,44 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
             Ok(d)
         })
         .collect()
+}
+fn job_lua(node: Option<&Node>) -> Result<Option<JobLua>> {
+    let Some(raw) = node else {
+        return Ok(None);
+    };
+    let mut definition: JobLua = raw.decode()?;
+    if let Some(path) = &mut definition.path {
+        let origin = &raw.get("path").unwrap().origin;
+        if path.as_os_str().is_empty() {
+            return Err(Error::config("job lua.path must not be empty").context(origin));
+        }
+        *path = origin.file.parent().unwrap().join(&*path);
+    }
+    definition.base_dir = raw
+        .get("options")
+        .unwrap_or(raw)
+        .origin
+        .file
+        .parent()
+        .unwrap()
+        .into();
+    for (key, library) in &mut definition.libraries {
+        let origin = &raw.get("libraries").unwrap().get(key).unwrap().origin;
+        if library.is_empty() {
+            return Err(Error::config("job lua library must not be empty").context(origin));
+        }
+        if library.contains('/') || library.contains('\\') {
+            *library = origin
+                .file
+                .parent()
+                .unwrap()
+                .join(&*library)
+                .to_str()
+                .ok_or_else(|| Error::config("job lua library path must be UTF-8"))?
+                .into();
+        }
+    }
+    Ok(Some(definition))
 }
 pub fn load(path: &Path) -> Result<Job> {
     load_with_paths(path, &PathOverrides::default())
@@ -641,10 +797,10 @@ pub fn load_with_paths(path: &Path, paths: &PathOverrides) -> Result<Job> {
     if !m.contains_key("input")
         || !m.contains_key("output")
         || m.keys()
-            .any(|k| !matches!(k.as_str(), "input" | "process" | "output"))
+            .any(|k| !matches!(k.as_str(), "lua" | "input" | "process" | "output"))
     {
         return Err(Error::config(
-            "job requires input and output; process is optional and other keys are forbidden",
+            "job requires input and output; lua and process are optional and other keys are forbidden",
         )
         .context(&root.origin));
     }
@@ -652,8 +808,17 @@ pub fn load_with_paths(path: &Path, paths: &PathOverrides) -> Result<Job> {
     let Kind::Mapping(m) = &root.kind else {
         unreachable!("job root was validated");
     };
-    let input = datasets(&m["input"], false)?;
-    let output = datasets(&m["output"], true)?;
+    let lua = job_lua(m.get("lua"))?;
+    let lua_runtime = crate::lua::Runtime::new(lua.as_ref());
+    let mut input = datasets(&m["input"], false)?;
+    let mut output = datasets(&m["output"], true)?;
+    for dataset in input.iter_mut().chain(&mut output) {
+        if dataset.format == Format::Lua
+            && let Some(state) = lua_runtime.state()
+        {
+            dataset.lua.get_or_insert_default().job = Some(state);
+        }
+    }
     let mut process: Vec<Process> = m
         .get("process")
         .map(Node::decode)
@@ -690,6 +855,8 @@ pub fn load_with_paths(path: &Path, paths: &PathOverrides) -> Result<Job> {
         }
     }
     Ok(Job {
+        lua,
+        lua_runtime,
         input,
         process,
         output,

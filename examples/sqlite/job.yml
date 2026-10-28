@@ -1,0 +1,48 @@
+input:
+  - id: customers
+    format: lua
+    path: sqlite.lua
+    lua:
+      libraries:
+        sqlite3: libsqlite3.so.0
+      options:
+        database: data/customers.sqlite
+        query: SELECT customer_id, customer_name, region, credit_limit, score, payload FROM customers ORDER BY customer_id
+    fields:
+      - {name: customer_id}
+      - {name: customer_name, nullable: true}
+      - {name: region, nullable: true}
+      - {name: credit_limit, type: int64}
+      - {name: score, type: float64}
+      - {name: payload, type: binary, nullable: true}
+  - id: sales
+    format: csv
+    path: data/sales.csv
+    encoding: utf-8
+    fields:
+      - {name: customer_id}
+      - {name: amount, type: decimal, precision: 9, scale: 2}
+process:
+  - id: details
+    sql: |
+      SELECT s.customer_id, c.customer_name, c.region, s.amount, c.credit_limit
+      FROM sales s LEFT JOIN customers c ON s.customer_id = c.customer_id
+output:
+  - id: details
+    format: csv
+    path: out/details.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: SELECT * FROM details
+  - id: customers
+    format: csv
+    path: out/customers.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: SELECT * FROM customers
+  - id: totals
+    format: csv
+    path: out/totals.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: SELECT region, SUM(amount) AS total_amount FROM details GROUP BY region ORDER BY region NULLS LAST

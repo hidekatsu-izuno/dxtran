@@ -1,4 +1,5 @@
 mod batch;
+pub(crate) mod lua;
 mod reader;
 mod table;
 pub use reader::InputReader;

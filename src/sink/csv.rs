@@ -67,7 +67,7 @@ impl CsvEncoder {
                     };
                     append_csv_cell(
                         buffer,
-                        value,
+                        f.trim_output_text(value),
                         self.quote_always[field_no],
                         self.delimiter,
                         self.quote,

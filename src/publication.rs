@@ -1,7 +1,7 @@
 //! Validate destinations, prepare access rights for every output, then publish.
 use crate::filesystem::{Security, filesystem, identity};
 use crate::{
-    config::Job,
+    config::{Format, Job},
     error::{Error, Result},
 };
 use std::{
@@ -44,7 +44,21 @@ pub fn preflight(job: &Job, temp: &Path) -> Result<()> {
     let fs = filesystem(&temporary).map_err(|e| Error::config(e.to_string()))?;
     let mut paths = BTreeSet::new();
     let mut inodes = BTreeSet::new();
-    for input in &job.input {
+    if let Some(path) = job.lua.as_ref().and_then(|lua| lua.path.as_ref()) {
+        let canonical = fs::canonicalize(path)
+            .map_err(|e| Error::config(e.to_string()).context(path.display()))?;
+        if !canonical.is_file() {
+            return Err(Error::config("job lua.path must be a regular file"));
+        }
+        paths.insert(canonical);
+        inodes.insert(identity(path).map_err(|e| Error::config(e.to_string()))?);
+    }
+    // Output plugin paths are source code too; protect them from file outputs.
+    for input in job
+        .input
+        .iter()
+        .chain(job.output.iter().filter(|d| d.format == Format::Lua))
+    {
         let path = fs::canonicalize(&input.path)
             .map_err(|e| Error::config(e.to_string()).context(input.path.display()))?;
         if !path.is_file() {
@@ -54,6 +68,9 @@ pub fn preflight(job: &Job, temp: &Path) -> Result<()> {
         inodes.insert(identity(&input.path).map_err(|e| Error::config(e.to_string()))?);
     }
     for output in &job.output {
+        if output.format == Format::Lua {
+            continue;
+        }
         let dest = canonical_destination(&output.path)?;
         let existing = match fs::symlink_metadata(&dest) {
             Ok(meta) if meta.file_type().is_file() => true,
@@ -110,12 +127,16 @@ impl DestinationState {
         }))
     }
 }
-struct PreparedOutput<'a> {
+struct PreparedFile<'a> {
     source: &'a Path,
     destination: PathBuf,
     previous: Option<DestinationState>,
     // Windows excludes other opens until the prepared file has been renamed.
     file: File,
+}
+enum PreparedOutput<'a> {
+    File(PreparedFile<'a>),
+    Lua(&'a Path),
 }
 fn prepare_outputs<'a>(job: &Job, staged: &'a [PathBuf]) -> Result<Vec<PreparedOutput<'a>>> {
     if job.output.len() != staged.len() {
@@ -125,6 +146,15 @@ fn prepare_outputs<'a>(job: &Job, staged: &'a [PathBuf]) -> Result<Vec<PreparedO
         .iter()
         .zip(staged)
         .map(|(output, source)| {
+            if output.format == Format::Lua {
+                crate::sink::lua::spool(source).map_err(|e| {
+                    e.context(format!(
+                        "output {}: staging preparation failed; no outputs published",
+                        output.id
+                    ))
+                })?;
+                return Ok(PreparedOutput::Lua(source));
+            }
             let prepare = || -> Result<_> {
                 let destination = canonical_destination(&output.path)?;
                 let previous = DestinationState::read(&destination)?;
@@ -134,12 +164,12 @@ fn prepare_outputs<'a>(job: &Job, staged: &'a [PathBuf]) -> Result<Vec<PreparedO
                 let file =
                     crate::filesystem::prepare(source, previous.as_ref().map(|p| &p.security))
                         .map_err(|e| Error::output(e.to_string()))?;
-                Ok(PreparedOutput {
+                Ok(PreparedOutput::File(PreparedFile {
                     source,
                     destination,
                     previous,
                     file,
-                })
+                }))
             };
             prepare().map_err(|e| {
                 e.context(format!(
@@ -157,6 +187,19 @@ pub fn publish(job: &Job, staged: &[PathBuf]) -> Result<()> {
 fn publish_prepared(job: &Job, prepared: Vec<PreparedOutput<'_>>) -> Result<()> {
     let mut published = vec![];
     for (i, (output, prepared)) in job.output.iter().zip(prepared).enumerate() {
+        let prepared = match prepared {
+            PreparedOutput::Lua(source) => {
+                if let Err(error) = crate::sink::lua::publish(output, source) {
+                    return Err(error.context(format!(
+                        "external publication failed; published={published:?}; failed_external={}; not_started={:?}",
+                        output.id, job.output[i + 1..].iter().map(|d| &d.id).collect::<Vec<_>>()
+                    )));
+                }
+                published.push((&output.id, &output.path));
+                continue;
+            }
+            PreparedOutput::File(prepared) => prepared,
+        };
         let publish = || -> Result<()> {
             if DestinationState::read(&prepared.destination)? != prepared.previous {
                 return Err(Error::output(
@@ -245,5 +288,44 @@ mod tests {
         assert_eq!(fs::read(&job.output[1].path).unwrap(), b"racing writer");
         assert!(!staged[0].exists());
         assert!(staged[1].exists());
+    }
+
+    #[test]
+    fn file_permission_preparation_failure_does_not_open_external_writers() {
+        use datafusion::arrow::{
+            array::StringArray,
+            datatypes::{DataType, Field, Schema},
+            record_batch::RecordBatch,
+        };
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("writer.lua"),
+            "return {open_writer=function() error('must not open writer') end}",
+        )
+        .unwrap();
+        let config = serde_json::json!({"input":[{"id":"data","format":"csv","path":"in.csv","encoding":"utf-8","fields":[{"name":"value"}]}],"output":[{"id":"external","format":"lua","path":"writer.lua","sql":"SELECT value FROM data"},{"id":"file","format":"csv","path":"blocked.csv","mode":"overwrite","encoding":"utf-8","sql":"SELECT value FROM data"}]});
+        fs::write(dir.path().join("job.yml"), config.to_string()).unwrap();
+        let mut job = crate::config::load(&dir.path().join("job.yml")).unwrap();
+        job.allow_unsafe_lua();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Utf8,
+            false,
+        )]));
+        let layout = crate::layout::RecordLayout::output(&job.output[0], schema.clone()).unwrap();
+        let staged = [dir.path().join("a.tmp"), dir.path().join("b.tmp")];
+        let mut sink =
+            crate::sink::OutputSink::create(&job.output[0], &layout, &staged[0], &schema).unwrap();
+        sink.batch(
+            RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["new"]))]).unwrap(),
+        )
+        .unwrap();
+        sink.finish().unwrap();
+        fs::write(&staged[1], "new").unwrap();
+        fs::create_dir(dir.path().join("blocked.csv")).unwrap();
+        let error = publish(&job, &staged).unwrap_err();
+        assert!(error.message.contains("no outputs published"), "{error}");
+        assert!(!error.message.contains("must not open writer"));
     }
 }

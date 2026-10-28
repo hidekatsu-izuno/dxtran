@@ -1,4 +1,5 @@
 mod csv;
+pub(crate) mod lua;
 mod physical;
 use crate::{
     config::{Dataset, Format},
@@ -28,6 +29,7 @@ enum Writer {
     Csv(TextWriter<crate::compression::Output>),
     Physical(crate::compression::Output),
     Parquet(Box<parquet::arrow::ArrowWriter<BufWriter<File>>>),
+    Lua(Box<datafusion::arrow::ipc::writer::FileWriter<BufWriter<File>>>),
 }
 pub struct OutputSink {
     dataset: Dataset,
@@ -89,6 +91,14 @@ impl OutputSink {
                 crate::compression::Output::new(file, dataset.compression)
                     .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
                 layout.encoding,
+            ))
+        } else if dataset.format == Format::Lua {
+            Writer::Lua(Box::new(
+                datafusion::arrow::ipc::writer::FileWriter::try_new(
+                    BufWriter::new(file),
+                    result_schema,
+                )
+                .map_err(|e| Error::output(e.to_string()))?,
             ))
         } else if dataset.format == Format::Parquet {
             Writer::Parquet(Box::new(
@@ -183,6 +193,13 @@ impl OutputSink {
         Ok(())
     }
     fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        if let Writer::Lua(writer) = &mut self.writer {
+            writer
+                .write(&batch)
+                .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
+            self.rows += batch.num_rows() as u64;
+            return Ok(());
+        }
         if let Writer::Parquet(writer) = &mut self.writer {
             writer.write(&batch).map_err(|e| {
                 Error::output(e.to_string()).context(format!(
@@ -262,6 +279,14 @@ impl OutputSink {
     }
     pub fn finish(self) -> Result<u64> {
         match self.writer {
+            Writer::Lua(mut writer) => {
+                writer.finish().map_err(|e| Error::output(e.to_string()))?;
+                writer
+                    .get_mut()
+                    .flush()
+                    .and_then(|_| writer.get_ref().get_ref().sync_all())
+                    .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
+            }
             Writer::Parquet(mut writer) => {
                 writer
                     .finish()

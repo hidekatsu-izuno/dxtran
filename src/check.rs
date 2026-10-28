@@ -59,6 +59,7 @@ impl Checks {
         let df_schema = DFSchema::try_from(compiled.schema.as_ref().clone())
             .map_err(|e| Error::config(e.to_string()))?;
         let context = SessionContext::new();
+        crate::functions::register(&context);
         for (i, check) in dataset.check.iter().enumerate() {
             let origin = check
                 .when_origin

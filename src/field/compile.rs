@@ -105,14 +105,15 @@ impl CompiledField {
         }
         if self.kind == FieldType::Boolean {
             for (b, candidates) in [(true, &self.true_values), (false, &self.false_values)] {
-                let s = self.boolean_text(b);
+                let text = self.boolean_text(b);
+                let s = self.trim_output_text(&text);
                 let bytes = if format == Format::Csv {
                     s.as_bytes().to_vec()
                 } else {
-                    self.padded(&s).map_err(|e| Error::config(e.message))?
+                    self.padded(s).map_err(|e| Error::config(e.message))?
                 };
                 let decoded = if format == Format::Csv {
-                    s
+                    self.trim_text(s).to_owned()
                 } else {
                     self.trim_text(&self.encoding.decode(&bytes)?).to_owned()
                 };
@@ -175,7 +176,6 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
         if spec.when.is_some()
             || spec.length.is_some()
             || spec.offset.is_some()
-            || spec.trim.is_some()
             || spec.pad_char.is_some()
             || spec.null_if.is_some()
             || spec.null_if_pattern.is_some()
@@ -356,9 +356,10 @@ fn text_rules(
     });
     let trim = match trim {
         "none" => Trim::None,
+        "left" => Trim::Left,
         "right" => Trim::Right,
         "both" => Trim::Both,
-        _ => return Err(bad("invalid trim")),
+        _ => return Err(bad("trim must be false, left, right or both")),
     };
     let null_regex = spec
         .null_if_pattern
@@ -399,11 +400,7 @@ fn boolean_values(
     trim: Trim,
 ) -> Result<(Vec<String>, Vec<String>)> {
     let bad = |message: &str| invalid(spec, message);
-    let trim_value = |s: &str| match trim {
-        Trim::Both => s.trim_matches(pad).to_string(),
-        Trim::Right => s.trim_end_matches(pad).to_string(),
-        _ => s.to_owned(),
-    };
+    let trim_value = |s: &str| trim.apply(s, pad).to_owned();
     let true_values: Vec<String> = spec
         .true_values
         .clone()

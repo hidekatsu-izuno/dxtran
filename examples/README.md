@@ -1,9 +1,11 @@
 # 入出力の組み合わせサンプル
 
-固定長・CSV・RDW・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。16ディレクトリに30ジョブ（正常系23、異常系7）があります。
+固定長・CSV・RDW・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。ファイル変換は16ディレクトリに30ジョブ（正常系23、異常系7）があります。加えて、[SQLite の外部テーブル](sqlite/README.md)を LuaJIT のプラグインで読み込む例があります。
 
 | ディレクトリ | 入力 → 出力 | 確認する内容 |
 | --- | --- | --- |
+| [lua_job](lua_job/README.md) | Lua → CSV / Lua | ジョブ共有の `dxt.job`、共有カウンター、任意の開始・終了処理 |
+| [sqlite](sqlite/README.md) | SQLite + CSV → CSV / SQLite | LuaJIT FFI、共有ライブラリの検索 / 直接パス、JOIN・集計、追記・全件置換・UPSERT、64bit整数、NULL・空文字・BLOB |
 | [csv_to_csv](csv_to_csv/job.yml) | CSV → CSV / TSV | 先頭ゼロ、NULL と空文字、引用符・カンマ・項目内改行、最終改行なし、Decimal、真偽値、日付、hex → Base64、列別引用指定 |
 | [csv_to_fixed](csv_to_fixed/job.yml) | CSV → 固定長 → CSV | UTF-8 日本語のバイト幅、LF、明示 offset、FILLER、右寄せ、NULL 補完、読み戻し |
 | [fixed_to_csv](fixed_to_csv/job.yml) | 固定長 → CSV / TSV | CP932 → UTF-8 / CP932、CRLF、末尾区切り省略、ASCII 符号付きゾーン10進数、正規表現による NULL 判定 |
@@ -118,7 +120,7 @@ target/debug/dxt run examples/checks/output_abend.yml
 ## 全サンプルを検証する
 
 ```sh
-cargo test --locked --test examples -- --nocapture
+cargo test --locked --test examples --test lua_plugins --test lua_outputs --test lua_job --test lua_security -- --nocapture
 python3 examples/generate_fixtures.py --check
 ```
 
@@ -140,7 +142,7 @@ CSV・固定長の正常系は出力の全バイトを期待値と比較しま�
 
 `check --scan` は入力を走査しますが、出力値の変換は `run` で行います。上記の異常系も、通常の `check` と `explain` は成功する設定です。
 
-期待ファイルは [generate_fixtures.py](generate_fixtures.py) に明示した文字列・既知のバイト列と Python 標準ライブラリで生成しています。`dxt` の出力を期待値に流用しません。入力・期待値・[manifest.json](manifest.json) を再生成するときは次を実行します。
+ファイル変換の期待ファイルは [generate_fixtures.py](generate_fixtures.py) に明示した文字列・既知のバイト列と Python 標準ライブラリで生成しています。SQLite の期待 CSV は [sqlite/expected](sqlite/expected) に明示しています。`dxt` の出力を期待値に流用しません。ファイル変換の入力・期待値・[manifest.json](manifest.json) を再生成するときは次を実行します。
 
 ```sh
 python3 examples/generate_fixtures.py

@@ -16,9 +16,9 @@ dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長、
 
 | 分類 | 初期版の対応 |
 | --- | --- |
-| 入力 | CSV、固定長（`fixed`）、RDW 付き可変長（`rdw`）、Parquet（`parquet`） |
+| 入力 | CSV、固定長（`fixed`）、RDW 付き可変長（`rdw`）、Parquet（`parquet`）、LuaJIT 外部テーブル（`lua`） |
 | 編集 | DataFusion SQL による選択、フィルタ、式、結合、集計、ウィンドウ関数 |
-| 出力 | CSV、固定長、RDW 付き可変長、Parquet。Parquet は SQL 結果スキーマ、他の形式は YAML の項目定義を使用 |
+| 出力 | CSV、固定長、RDW 付き可変長、Parquet、LuaJIT 外部テーブル。Parquet / Lua 出力は SQL 結果スキーマを使用 |
 | 定義の再利用 | 任意の枝への `import` と利用側の値による上書き |
 | 行順 | 元ファイル順を既定とし、SQL の ORDER BY で変更可能 |
 | 文字コード | encoding_rs と jtc-utils が認識する全ラベル・別名。明示指定し、自動判定しない |
@@ -30,7 +30,7 @@ dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長、
 | NULL 出力 | fixed は型別の既定値で補完する。文字・日時等は空白、数値は0、binary はゼロバイト、bits の NULL 子は false。rdw は明示した NULL 表現を使用可能 |
 | 実行 | 設定検証、SQL 計画の表示、ストリーム実行、実行結果の記録 |
 
-BDW、spanned record、gzip / zstd / Parquet 内部の圧縮以外の圧縮ファイル、リモートストレージ、任意コードの実行、分散実行は後続の拡張対象とする。copybook の取り込み・解析は対象に含めない。
+BDW、spanned record、gzip / zstd / Parquet 内部の圧縮以外の圧縮ファイル、組み込みのリモートストレージ、分散実行は後続の拡張対象とする。信頼済み LuaJIT プラグインから外部サービス・ライブラリへ接続できる。copybook の取り込み・解析は対象に含めない。
 
 ## 3. 全体構成
 
@@ -64,7 +64,7 @@ process: []
 output: []
 ```
 
-- import 展開後の最上位で使えるキーは `input`、`process`、`output` とし、指定する値はすべて配列。`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。
+- import 展開後の最上位で使えるキーは `input`、`process`、`output`、任意の `lua` とする。入出力・process は配列で、`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。ジョブ直下の `lua` は共有変数と任意の開始・終了処理を指定するマップである。
 - 各 output は `sql` を必須とする。`process` を省略した場合や `process: []` でも、`output.sql` に編集・結合・集計を書ける。単純な形式変換も `SELECT * FROM sales` 等の SQL で入力を指定する。
 - 項目定義は形式共通で input / output 直下の `fields` に置く。CSV の共通設定は `csv`、fixed のレコード設定は `fixed`、RDW の共通設定は `rdw` にまとめる。
 - 各定義に `id` を付ける。`input` と `process` の ID は同じ SQL テーブル名の名前空間を共有し、重複を禁止する。出力 ID は出力内で一意とする。
@@ -74,7 +74,7 @@ output: []
 - YAML は UTF-8 とし、YAML の相対パスはその値を書いた YAML ファイルの所在ディレクトリから解決する。import 元から引き継いだ値と利用側で上書きした値は、それぞれの記述元を基準にする。CLI で指定した入出力パスは起動時のカレントディレクトリを基準にする。
 - input / output の `path` は YAML では省略できる。CLI の `--input.<id>.path` / `--output.<id>.path` を指定した場合は、import 展開後の該当 ID の値より優先する。各パスは YAML または CLI のいずれかで指定する必要がある。
 - 初期版は1入力定義につき1ファイル、1出力定義につき1ファイル。glob、ディレクトリ入力、標準入出力は扱わない。
-- 環境変数やテンプレートの展開は行わない。実行時のメモリ量等は CLI オプションで指定し、最上位キーを増やさない。
+- 環境変数やテンプレートの展開は行わない。実行時のメモリ量等は CLI オプションで指定する。
 - サポートする設定文法は dxtran のバージョンと対応させる。破壊的変更は互換性変更として明示する。
 
 ## 5. 設定の全体例
@@ -176,10 +176,10 @@ output:
 | キー | 必須 | 意味 |
 | --- | --- | --- |
 | `id` | 必須 | SQL から参照するテーブル名 |
-| `format` | 必須 | `csv`、`fixed`、`rdw`、`parquet` |
+| `format` | 必須 | `csv`、`fixed`、`rdw`、`parquet`、`lua` |
 | `path` | 任意 | 入力ファイルのパス。省略時は CLI の `--input.<id>.path` で指定する |
 | `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。省略時は非圧縮。6.7節参照 |
-| `encoding` | parquet 以外で必須 | encoding_rs と jtc-utils が認識する文字コードラベル。6.5節参照。parquet では指定不可 |
+| `encoding` | parquet / lua 以外で必須 | encoding_rs と jtc-utils が認識する文字コードラベル。6.5節参照。parquet / lua では指定不可 |
 | `fields` | parquet 以外で必須 | CSV は列名・type・NULL 許容、fixed / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
 | `check` | 任意 | レコード条件による異常終了・ログ出力。6.8節参照 |
 | `csv` | CSV で任意 | ヘッダー・区切り・引用符の設定 |
@@ -255,7 +255,7 @@ input:
     fields:
       - { name: message_id, length: 4, type: uint-be }
       - { name: amount, length: 5, type: packed, precision: 9, scale: 2 }
-      - { name: text, length: rest, type: string, trim: none, max_length: 1024 }
+      - { name: text, length: rest, type: string, trim: false, max_length: 1024 }
 ```
 
 この例の本体は9〜1,033バイト、RDW 込みでは13〜1,037バイトとなる。同じ fields を output 直下に指定すれば、編集後の文字列長に合う RDW を生成する。
@@ -382,6 +382,26 @@ check:
 
 [examples/checks](../examples/checks/job.yml) に入力の警告・通知、出力の通知、入力・出力それぞれの異常終了を示すジョブを収録する。
 
+### 6.9 LuaJIT 外部テーブル
+
+Lua の実行は既定で拒否する。Lua 入出力または最上位の `lua` を含むジョブは、CLI の `--allow-lua` による明示許可を必要とする。YAML では自己許可できない。これは信頼済みコードをプロセスと同じ権限で実行するための許可であり、サンドボックスではない。check / explain も許可時にはトップレベルを評価する。[セキュリティ境界と隔離の設計](LUA_SECURITY.md)を参照する。
+
+メイン・フック・補助モジュールの標準ローダーは1ファイル1 MiBまでの Lua テキストだけを受け付ける。補助モジュールはスクリプトのディレクトリ内に限定し、外部 symlink・環境変数経由の暗黙のモジュール検索を拒否する。FFI による直接のロード・プロセス操作・メモリ確保は、信頼済みモードの権限に含まれる。
+
+`format: lua` は `path` の Lua スクリプトが返す `open(options)` / カーソル `next()` / 任意の `close()` から行を読み、通常の SQL テーブルとして登録する。`lua.libraries` の値は共有ライブラリ名または直接パスで指定でき、Linux のライブラリ名検索には起動時の `LD_LIBRARY_PATH` が適用される。`lua.options` はプラグイン固有の設定である。
+
+`fields` は `name`・`type`・`nullable` で定義し、`type` は `string`・`int64`・`uint64`・`float64`・`boolean`・`binary` を受け付ける。`encoding`・`compression`・物理レイアウトは指定しない。通常の `check` / `explain` はスクリプトの読み込みと API の検証だけを行い、`check --scan` / `run` で接続・走査する。入力の `check`、既存の順序伝搬・JOIN・集計・出力形式に対応する。
+
+出力にも `format: lua` を指定できる。出力の `path` はプラグインで、列は SQL 結果から取得する。`fields` / `encoding` は指定しない。`mode` は `append`（既定）・`overwrite`・`merge` を受け付け、`open_writer(options, columns, mode)` が返す `write(row)`・`commit()`・`rollback()`・任意の `close()` を呼び出す。任意の `validate_output(options, columns, mode)` で接続なしの設定検証を行える。SQLite サンプルの `merge` は `lua.options.keys` の主キー・ユニークキーによる UPSERT、`overwrite` はテーブル定義を保つ全件置換である。
+
+すべての SQL 処理・check とファイル出力の権限準備を完了してから、出力順に反映する。Lua 出力は一度 Arrow IPC として一時領域に保存し、公開時に外部テーブルへ送る。トランザクションは出力ごとで、途中の失敗はその出力を rollback する。先にコミット済みの他の出力は取り消さない。`check` / `explain` / `check --scan` は出力 writer を開かない。
+
+プラグインは信頼済みの任意コードとして実行する。カーソルの終了・失敗・途中破棄時に後始末を行う。外部データのスナップショットやネイティブライブラリのメモリは dxt の管理外である。[API・型・パス・実行規則の詳細](LUA_PLUGINS.md)と[SQLite の実行例](../examples/sqlite/README.md)を参照する。
+
+ジョブ直下に `lua.variables` を定義すると、各入出力の Lua スクリプトから同じ `dxt.job` テーブルを共有できる。変数名・用途は自由で、接続に特化したキーやホスト側の接続処理は設けない。任意の `lua.path` に `init(job, options)` / `close(job, success)` を定義し、開始・終了時にリソースを管理できる。`lua.options` は初期化用の設定、`lua.libraries` は全 Lua プラグインへ継承する共有ライブラリ設定である。
+
+通常の check / explain はフックを実行せず、run / check --scan で init を1回実行し、カーソル・writer の解放後に close を1回実行する。エラー・中断時も終了処理を行う。共有時はジョブの Lua VM を共通化し、Lua への呼び出しを直列化する。FFI の cdata 等も同じ VM 上で保持できる。共有変数は実行ごとに初期化し、自動ロールバックや複数出力の一括トランザクションは行わない。[共有変数の例](../examples/lua_job/README.md)を参照する。
+
 ## 7. 項目定義と統合した type
 
 ### 7.1 fields と固定幅の定義
@@ -450,7 +470,7 @@ fixed のレコード長は全項目の最大終端（または同じ値の `fix
 | `scale` | 10進数の小数桁数。0〜precision、既定0 |
 | `zone` | ゾーン系のバイト体系。`ebcdic`（既定）または `ascii` |
 | `nullable` | 入力と rdw 出力の NULL 許容は既定 `false`。CSV 出力は省略時に SQL の結果列の nullable を引き継ぐ。fixed 出力の NULL はこの値にかかわらず型別の既定値で補完 |
-| `trim` | 文字として格納する型の `none` / `right` / `both`。CSV では指定不可 |
+| `trim` | input / output の文字として格納する型で `false` / `left` / `right` / `both`。CSV でも指定可。従来の `none` は `false` の別名 |
 | `pad_char` | fixed / rdw の文字項目を幅埋め・trim する Unicode 1文字。fixed の NULL 埋めにも使用。既定は U+0020 |
 | `null_if` | fixed / rdw の文字項目を NULL にする文字列の配列。完全一致、既定は空配列 |
 | `null_if_pattern` | 同じ文字項目を NULL にする正規表現1つ。フィールド全体への一致、既定は未指定 |
@@ -505,13 +525,13 @@ CSV の output.fields では、type・precision / scale・unit / timezone・null
 
 ### 7.4 文字項目・日付時刻・binary・bits
 
-`string` は項目のバイト範囲を切り出してからデコードする。fixed / rdw の既定 trim は `right`、除去対象は `pad_char` とし、`trim: none` で末尾の埋め文字も保持できる。`length: rest` の既定は `none` とする。
+`string` は項目のバイト範囲を切り出してからデコードする。fixed / rdw 入力の既定 trim は `right`、除去対象は `pad_char` とし、`trim: false` で末尾の埋め文字も保持できる。`length: rest` と CSV 入力の既定は `false` とする。従来の `trim: none` も `false` の別名として受け付ける。
 
-`decimal` は `-123.45` のような10進文字列として解釈する。先頭の `+` / `-` と小数点 `.` を認め、指数表記・桁区切りは認めない。fixed / rdw では既定の `trim: both` により外側の `pad_char` を除き、CSV では空白を除去しない。
+`decimal` は `-123.45` のような10進文字列として解釈する。先頭の `+` / `-` と小数点 `.` を認め、指数表記・桁区切りは認めない。fixed / rdw 入力では既定の `trim: both` により外側の `pad_char` を除く。CSV 入力では明示した trim を型変換前に適用し、省略時は空白を除去しない。
 
-fixed / rdw の固定幅出力は、非 NULL の `decimal` を右寄せ、その他の文字項目を左寄せとし、不足幅を `pad_char` で埋める。fixed で値が NULL の `string` / `boolean` / `date` / `time` / `timestamp` は項目全体を同じ `pad_char` で埋め、`decimal` は7.9節に従って0を右寄せして埋める。既定は U+0020 とし、例えば `pad_char: "\u3000"` で全角空白を使える。空文字・複数文字の指定は設定エラーとする。文字の途中で切らず、エンコードと終端状態のリセットを含めてちょうど指定バイト長になることを検証する。
+出力の trim は明示した場合だけ適用し、省略時は元の出力文字列を保持する。SQL 値を文字列に整形した後、文字コード変換・幅検証・CSV の引用処理より前に trim する。fixed / rdw の固定幅出力では trim 後に、非 NULL の `decimal` を右寄せ、その他の文字項目を左寄せとし、不足幅を `pad_char` で再度埋める。例えば長さ5・`trim: both` の string に `"  A  "` を出力すると `"A    "` になる。fixed で値が NULL の `string` / `boolean` / `date` / `time` / `timestamp` は項目全体を同じ `pad_char` で埋め、`decimal` は7.9節に従って0を右寄せして埋める。既定は U+0020 とし、例えば `pad_char: "\u3000"` で全角空白を使える。空文字・複数文字の指定は設定エラーとする。文字の途中で切らず、エンコードと終端状態のリセットを含めてちょうど指定バイト長になることを検証する。
 
-trim はデコード後に指定した `pad_char` の連続を取り除き、他の空白文字まで自動で除去しない。`pad_char` を指定できる型は文字項目6型だけとする。rdw の `rest` は幅埋めしないが、明示した trim の対象にも `pad_char` を使う。CSV では pad_char と trim を指定しない。
+`trim: false` は除去なし、`left` は先頭、`right` は末尾、`both` は両端の連続した対象文字を取り除く。fixed / rdw では `pad_char`、CSV では U+0020 だけを対象とし、タブ・改行等の他の空白文字まで自動で除去しない。入力ではデコード後、NULL マーカーの照合と型変換より前に適用する。CSV の未引用の空フィールドは trim 前に NULL と判定し、空白だけの値が trim 後に空文字になっても NULL には変えない。`pad_char` を指定できる型は fixed / rdw の文字項目6型だけとする。rdw の `rest` は幅埋めしないが、明示した trim の対象にも `pad_char` を使う。`trim: true`、不明な文字列、文字項目以外への trim 指定は設定エラーとする。
 
 文字が選んだ encoding に存在しない場合や、埋め文字を繰り返しても残りバイト幅をちょうど満たせない場合はエラーとする。別の文字への置換やマルチバイト文字の途中での切断は行わない。FILLER の `fill_byte` は生バイトの指定として扱う。
 
@@ -541,7 +561,7 @@ UTF-16 の wstring 相当の文字列も、`type: string` とファイルの `en
 
 #### 7.4.2 date / time / timestamp
 
-文字列で保存された日付時刻を `datetime_pattern` で解析し、Arrow の日付時刻型で計算する。全形式で input.fields / output.fields の各項目に同じ指定を使う。fixed / rdw の既定 trim は `both`、出力は左寄せとする。
+文字列で保存された日付時刻を `datetime_pattern` で解析し、Arrow の日付時刻型で計算する。全形式で input.fields / output.fields の各項目に同じ指定を使う。fixed / rdw 入力の既定 trim は `both`、出力は左寄せとする。
 
 パターンは Unicode UTS #35 の Date Format Patterns（LDML）に基づく。以下に初期版の対応範囲と dxtran の厳密な入出力規則を定める。パターン文字の意味と反復数を保持して解釈し、単純な文字列置換で別の書式へ変換しない。[Unicode UTS #35: Date format patterns](https://www.unicode.org/reports/tr35/tr35-79/tr35-dates.html#Date_Format_Patterns)
 
@@ -1005,6 +1025,58 @@ INNER JOIN customers AS c ON s.customer_id = c.customer_id
 
 初期版は遅延評価したビューを再利用し、結果の自動キャッシュは行わない。同じ中間処理を複数出力が使うと再読込・再計算が発生する。メモリへの全件保持を避け、将来は明示的なディスク中間保存を追加できる構造にする。実行中の入力ファイルは変更しないことを利用条件とし、データのスナップショット分離は保証しない。
 
+### 10.1 ICU 日時関数
+
+次のスカラー関数を `process.sql` / `output.sql`、項目の `when`、入出力の `check.when` に登録する。書式は Unicode UTS #35 の日時パターンで、DataFusion 標準の `to_char` / `date_format` / `to_date` / `to_timestamp` / `to_time` が使う Chrono 書式とは別の関数名で提供する。
+
+| 関数 | 戻り値 |
+| --- | --- |
+| `icu_to_char(value, pattern [, locale [, timezone]])` | Utf8 |
+| `icu_to_date(text, pattern [, locale])` | Date32 |
+| `icu_to_timestamp(text, pattern [, locale [, timezone]])` | Timestamp(us, UTC) |
+| `icu_to_time(text, pattern [, locale])` | Time64(us) |
+
+`locale` の既定は `en-US`。グレゴリオ暦と近代日本暦（1873-01-01、明治6年以降）に対応し、`ja-JP` は日本語のグレゴリオ暦、`ja-JP-u-ca-japanese` は和暦を選ぶ。他の暦はエラーにする。OS のロケール・タイムゾーン・現在日時を参照せず、ICU4X と組み込みデータの版は依存定義で固定する。元号の開始日、暦変換、ローカライズされた名称は ICU を使い、例えば昭和の開始日は1926-12-25とする。それ以前の旧暦変換や和暦の遡及適用は行わず、日本暦指定ではエラーにする。
+
+第1引数以外も列・式を指定でき、スカラーと列を組み合わせて使用できる。同じバッチ内の同じ書式・ロケール・タイムゾーンのコンパイル結果は再利用する。引数のいずれかが NULL の行は、その関数の戻り値型の NULL を返す。不正値はエラーにし、元の文字列や NULL への自動置換は行わない。
+
+**書式化**
+
+`icu_to_char` は日付・時刻・タイムスタンプを受け取り、文字列からの暗黙解析は行わない。ICU の Unicode パターン API で書式を解釈し、`yyyy-MM-dd`、`EEEE`、`MMMM`、引用したリテラル等を扱う。年月日のない時刻への日付パターン、日付への時刻パターン、タイムゾーンのない値へのオフセット・ゾーン名パターンはエラーにする。必要な項目だけを表示でき、小数秒等の表示桁を減らす場合はその桁まで表示する。
+
+タイムゾーン付きタイムスタンプは値に付いたゾーンで表示し、第4引数で表示ゾーンを変更できる。タイムゾーンのないタイムスタンプへの第4引数は、そのローカル日時のゾーンを明示する指定とする。日付と時刻だけの値には第4引数を指定しない。元号は表示ゾーンの暦日から決める。
+
+| 和暦のパターン | 例・意味 |
+| --- | --- |
+| `G`〜`GGG` / `GGGG` | ICU / CLDR の略称 / 正式名称。日本語ではいずれも `令和` |
+| `GGGGG` | `R` のような英字略号 |
+| `y` / `yy` | 元号年。8年は `8` / `08` |
+| `u` / `uuuu` | 西暦の拡張年 |
+
+**入力解析**
+
+入力は文字列型のみとする。7.4.2節の数値パターン・引用・厳密な全体一致・暦日検証・ASCII 数字の規則を共有し、`G`〜`GGGGG` とロケールに対応する `a` を追加する。月名・曜日名・週暦・ゾーン名の入力解析は初期版では未対応とし、設定されたパターンをエラーにする。西暦 `yy` の補完範囲は1970〜2069に固定する。
+
+和暦の `y` は `G` を必須とし、`yy` に西暦の世紀補完は適用しない。入力の元号は ICU の名称に加え `M` / `T` / `S` / `H` / `R` を認め、日本語ロケールでは `明` / `大` / `昭` / `平` / `令` も認める。`y` への `元` は1年として扱い、数値出力は `1` とする。元号年を暦日に変換後、実際の元号・元号年との一致も検証し、`平成31年5月1日`、元号年0、存在しない日付等をエラーにする。
+
+`icu_to_date` は年月日、`icu_to_time` は時を必須とする。`icu_to_timestamp` は年月日を必須とし、日付だけなら午前0時、時を指定した場合に省略した分・秒・小数秒も0とする。`S` は1〜9桁を受け取るが、マイクロ秒未満の非ゼロ値は精度を失うためエラーにする。
+
+`icu_to_timestamp` の第4引数は IANA タイムゾーンで、既定 `UTC`。入力に UTC オフセットがあればそれを優先し、オフセットがなければ第4引数のローカル日時と解釈して UTC に正規化する。夏時間による存在しない日時・二通りに解釈できる日時はエラーにする。表示は `icu_to_char` の第4引数で指定できる。
+
+```sql
+SELECT icu_to_char(DATE '2026-10-28', 'GGGGy年M月d日', 'ja-JP-u-ca-japanese');
+-- 令和8年10月28日
+SELECT icu_to_date('H31/04/30', 'GGGGGyy/MM/dd', 'ja-JP-u-ca-japanese');
+-- 2019-04-30
+SELECT icu_to_timestamp('令和元年5月1日 00:00', 'GGGGy年M月d日 HH:mm',
+                        'ja-JP-u-ca-japanese', 'Asia/Tokyo');
+-- 2019-04-30T15:00:00Z
+SELECT icu_to_time('午後01:02:03', 'ahh:mm:ss', 'ja-JP');
+-- 13:02:03
+```
+
+7.4.2節のファイル入出力の `datetime_pattern` は既存のグレゴリオ暦の対応範囲と厳密な往復検証を維持する。和暦文字列を SQL で解析する場合は入力を string として宣言し、出力を和暦文字列にする場合は `icu_to_char` の結果を string として出力する。
+
 ## 11. output と順序の仕様
 
 ### 11.1 出力元と SQL
@@ -1013,12 +1085,12 @@ INNER JOIN customers AS c ON s.customer_id = c.customer_id
 | --- | --- | --- |
 | `id` | 必須 | ログとエラーで使う出力 ID |
 | `sql` | 必須 | 出力するデータを定義する1つの SELECT 系クエリ |
-| `format` | 必須 | `csv` / `fixed` / `rdw` / `parquet` |
-| `path` | 任意 | 出力ファイルのパス。省略時は CLI の `--output.<id>.path` で指定する |
-| `encoding` | parquet 以外で必須 | 6.5節の文字コード。parquet では指定不可 |
+| `format` | 必須 | `csv` / `fixed` / `rdw` / `parquet` / `lua` |
+| `path` | 任意 | 出力ファイル、または Lua 出力プラグインのパス。省略時は CLI の `--output.<id>.path` で指定する |
+| `encoding` | parquet / lua 以外で必須 | 6.5節の文字コード。parquet / lua では指定不可 |
 | `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。Parquet は `parquet.compression` を使用 |
-| `mode` | 任意 | `error_if_exists`（既定）または `overwrite` |
-| `fields` | fixed / rdw で必須、CSV で任意、parquet で指定不可 | 全形式共通の項目定義の配列。CSV は name で結果列を参照し、必要な項目だけ出力設定を指定可能 |
+| `mode` | 任意 | ファイルは `error_if_exists`（既定）/ `overwrite`。Lua は `append`（既定）/ `overwrite` / `merge` |
+| `fields` | fixed / rdw で必須、CSV で任意、parquet / lua で指定不可 | 項目定義の配列。CSV は name で結果列を参照し、必要な項目だけ出力設定を指定可能 |
 | `check` | 任意 | SQL 結果の各行への異常終了・ログ出力。6.8節参照 |
 | `csv` | CSV で任意 | CSV 共通設定。区切り・引用符・ヘッダー・line_ending と、quote_style の共通既定値 |
 | `fixed` | fixed で必須 | record_separator と、任意の record_length。入力と同じ設定 |

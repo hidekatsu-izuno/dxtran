@@ -36,6 +36,15 @@ impl RecordLayout {
     }
     fn compile(d: &Dataset, result: Option<SchemaRef>) -> Result<Self> {
         let output = result.is_some();
+        if d.format == Format::Lua {
+            if let Some(schema) = result {
+                return crate::sink::lua::layout(d, schema);
+            }
+            return crate::source::lua::layout(d);
+        }
+        if d.lua.is_some() {
+            return Err(Error::config("lua block requires format: lua"));
+        }
         if d.format == Format::Parquet {
             if d.compression.is_some() {
                 return Err(Error::config(

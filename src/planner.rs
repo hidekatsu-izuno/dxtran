@@ -32,6 +32,7 @@ pub struct PlannedJob {
     pub outputs: Vec<PlannedOutput>,
 }
 pub async fn plan(ctx: &SessionContext, job: &Job) -> Result<PlannedJob> {
+    job.check_lua_permission()?;
     let mut inputs = vec![];
     let mut sets = BTreeMap::new();
     let conversion_budget = Arc::new(tokio::sync::Semaphore::new(

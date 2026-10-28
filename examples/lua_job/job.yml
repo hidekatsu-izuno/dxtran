@@ -1,0 +1,26 @@
+lua:
+  variables:
+    label: example
+    read_rows: 0
+    saved_rows: 0
+  path: lifecycle.lua
+  options:
+    summary_path: out/summary.txt
+input:
+  - id: records
+    format: lua
+    path: table.lua
+    fields:
+      - {name: id, type: int64}
+      - {name: label}
+output:
+  - id: records
+    format: csv
+    path: out/records.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: SELECT * FROM records
+  - id: counted
+    format: lua
+    path: table.lua
+    sql: SELECT * FROM records

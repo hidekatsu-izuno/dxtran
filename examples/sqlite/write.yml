@@ -1,0 +1,28 @@
+input:
+  - id: updates
+    format: csv
+    path: data/customer_updates.csv
+    encoding: utf-8
+    fields:
+      - {name: customer_id}
+      - {name: customer_name, nullable: true}
+      - {name: region, nullable: true}
+output:
+  - import: write_output.yml
+    id: appended
+    mode: append
+    sql: SELECT * FROM updates WHERE customer_id = '0004'
+    lua:
+      options: {table: customer_append}
+  - import: write_output.yml
+    id: overwritten
+    mode: overwrite
+    lua:
+      options: {table: customer_overwrite}
+  - import: write_output.yml
+    id: merged
+    mode: merge
+    lua:
+      options:
+        table: customer_merge
+        keys: [customer_id]

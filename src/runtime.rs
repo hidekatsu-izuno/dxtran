@@ -10,6 +10,7 @@ use crate::{
 };
 use datafusion::{physical_plan::displayable, prelude::SessionContext};
 use serde_json::json;
+pub(crate) use signals::interrupted;
 use std::time::Instant;
 mod cli;
 mod session;
@@ -78,34 +79,47 @@ async fn execute(cli: Cli, run_id: &str) -> Result<()> {
         Command::Explain { job, resources } => (job, resources, Operation::Explain),
         Command::Run { job, resources } => (job, resources, Operation::Run),
     };
-    let job = config::load_with_paths(&path, &cli.paths)?;
+    let mut job = config::load_with_paths(&path, &cli.paths)?;
+    if cli.allow_lua {
+        job.allow_unsafe_lua();
+    }
+    job.check_lua_permission()?;
     let temp = temporary_parent(&resources)?;
     publication::preflight(&job, &temp)?;
     log_start(&job, &path, &resources, run_id)?;
-    let ctx = context(&resources, None)?;
-    let planned = planner::plan(&ctx, &job).await?;
-    validate_plans(
-        &ctx,
-        &job,
-        &planned,
-        matches!(operation, Operation::Explain),
-    )
-    .await?;
-    if matches!(operation, Operation::Check { scan: true }) {
-        scan_inputs(&planned).await?;
-    }
-    if !matches!(operation, Operation::Run) {
-        if matches!(operation, Operation::Check { .. }) {
-            println!(
-                "OK: {} inputs, {} processes, {} outputs",
-                job.input.len(),
-                job.process.len(),
-                job.output.len()
-            );
+    let guard = job.lua_runtime.guard();
+    let result = async {
+        job.lua_runtime.validate()?;
+        let ctx = context(&resources, None)?;
+        let planned = planner::plan(&ctx, &job).await?;
+        validate_plans(
+            &ctx,
+            &job,
+            &planned,
+            matches!(operation, Operation::Explain),
+        )
+        .await?;
+        if matches!(operation, Operation::Run | Operation::Check { scan: true }) {
+            job.lua_runtime.start()?;
         }
-        return Ok(());
+        if matches!(operation, Operation::Check { scan: true }) {
+            scan_inputs(&planned).await?;
+        }
+        if !matches!(operation, Operation::Run) {
+            if matches!(operation, Operation::Check { .. }) {
+                println!(
+                    "OK: {} inputs, {} processes, {} outputs",
+                    job.input.len(),
+                    job.process.len(),
+                    job.output.len()
+                );
+            }
+            return Ok(());
+        }
+        run_job(&job, &planned, &resources, &temp, run_id).await
     }
-    run_job(&job, &planned, &resources, &temp, run_id).await
+    .await;
+    guard.finish(result)
 }
 async fn run_job(
     job: &config::Job,
@@ -149,11 +163,22 @@ fn log_start(
     resources: &Resources,
     run_id: &str,
 ) -> Result<()> {
+    let lua_execution = if job.lua.is_some()
+        || job
+            .input
+            .iter()
+            .chain(&job.output)
+            .any(|d| d.format == config::Format::Lua)
+    {
+        "trusted-unsafe"
+    } else {
+        "disabled"
+    };
     log(
-        json!({"event":"start","run_id":run_id,"version":env!("CARGO_PKG_VERSION"),"time":chrono::Utc::now().to_rfc3339(),"job":path,"hashes":job.hashes,"expanded_hash":job.expanded_hash,"threads":resources.threads,"memory_limit":resources.memory_limit}),
+        json!({"event":"start","run_id":run_id,"version":env!("CARGO_PKG_VERSION"),"time":chrono::Utc::now().to_rfc3339(),"job":path,"hashes":job.hashes,"expanded_hash":job.expanded_hash,"threads":resources.threads,"memory_limit":resources.memory_limit,"lua_execution":lua_execution}),
     );
     for d in job.input.iter().chain(&job.output) {
-        if d.format == config::Format::Parquet {
+        if matches!(d.format, config::Format::Parquet | config::Format::Lua) {
             continue;
         }
         let enc = crate::encoding::TextEncoding::resolve(&d.encoding)?;

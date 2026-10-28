@@ -1,0 +1,8 @@
+id: saved
+format: lua
+path: sqlite.lua
+sql: SELECT * FROM updates
+lua:
+  libraries: {sqlite3: libsqlite3.so.0}
+  options:
+    database: data/customers.sqlite

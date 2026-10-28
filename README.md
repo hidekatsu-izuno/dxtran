@@ -19,7 +19,29 @@ dxt run job.yml --input.sales.path=sales.csv --output.totals.path=totals.csv
 
 固定長・CSV の各組み合わせ、文字コード、全23型、読み戻し、異常系のサンプルと一括検証手順は [examples/README.md](examples/README.md) を参照してください。
 
+`format: lua` で LuaJIT のプラグインを外部テーブルとして定義し、データベース等のデータを SQL から参照できます。出力では `mode: append`（追記）・`overwrite`（全件置換）・`merge`（キーによる UPSERT）を指定できます。共有ライブラリは `LD_LIBRARY_PATH` 等による検索と直接パス指定に対応します。[外部テーブル API](docs/LUA_PLUGINS.md) と、[SQLite の JOIN・集計・書き込みサンプル](examples/sqlite/README.md)を用意しています。
+
+Lua は既定で無効です。信頼できるコードに限り、`dxt run --allow-lua job.yml` のように実行者が明示許可してください。`check` / `explain` でも許可するとトップレベルを評価します。FFI は実行プロセスと同じ権限を持ち、サンドボックスではありません。[リスク・対策・隔離の設計](docs/LUA_SECURITY.md)を参照してください。
+
+ジョブ直下の `lua.variables` で初期値を定義すると、各 Lua プラグインから `dxt.job` を通してジョブ全体の変数を共有できます。カウンターや設定値のほか、必要なら FFI のハンドル等も保持できます。任意の `lua.path` で開始・終了処理を指定できます。[共有変数のサンプル](examples/lua_job/README.md)を参照してください。
+
+SQL では Unicode 日時パターンを受け取る `icu_to_char`・`icu_to_date`・`icu_to_timestamp`・`icu_to_time` を使えます。第3引数のロケールは既定 `en-US` で、`ja-JP-u-ca-japanese` により ICU の和暦を選べます。日付の戻り値は Date32、時刻は Time64(us)、タイムスタンプは Timestamp(us, UTC) です。[引数・対応範囲](docs/SPEC.md#101-icu-日時関数)を参照してください。
+
+```sql
+SELECT icu_to_char(DATE '2026-10-28', 'GGGGy年M月d日', 'ja-JP-u-ca-japanese');
+-- 令和8年10月28日
+SELECT icu_to_date('R08/10/28', 'GGGGGyy/MM/dd', 'ja-JP-u-ca-japanese');
+-- 2026-10-28
+SELECT icu_to_timestamp('令和元年5月1日 00:00', 'GGGGy年M月d日 HH:mm',
+                        'ja-JP-u-ca-japanese', 'Asia/Tokyo');
+-- 2019-04-30T15:00:00Z
+SELECT icu_to_time('13:02:03', 'HH:mm:ss');
+-- 13:02:03
+```
+
 CSV・fixed・RDW の入力定義は全列の名前・型を指定します。CSV の未引用の空フィールドは NULL、引用した空フィールドは空文字です。`output.fields` の部分指定では SQL の列順を保ったまま書式を設定できます。fixed / RDW は全物理項目を定義し、隙間は名前のない FILLER で明示します。23種類の型、文字コード、ビット列、日時パターン、NULL 表現を共通のレイアウトで処理します。
+
+文字項目の `input.fields` / `output.fields` には `trim: false | left | right | both` を指定できます。`false` は保持、`left` は先頭、`right` は末尾、`both` は両端の空白を除去します。fixed / RDW で `pad_char` を指定した場合はその文字が対象です。固定幅出力では trim 後に項目幅まで再度埋めます。例えば長さ5・`trim: both` の項目に `"  A  "` を出力すると `"A    "` になります。[省略時の動作と詳細](docs/SPEC.md#74-文字項目日付時刻binarybits)を参照してください。
 
 `encoding` は従来の UTF-8・CP932 等に加え、[jtc-utils](https://docs.rs/jtc-utils/0.1.0/jtc_utils/charset/) の `jef`、`x-fujitsu-ebcdic-ascii`、`x-fujitsu-ebcdic-kana`、`x-fujitsu-ebcdic-lower`、`cp930`、`cp939`、`cp942`、`cp942c`、`cp943c` に対応します。例えば IBM の漢字混在データは `encoding: cp939` と指定します。JEF は2バイトの漢字コード専用で、固定長・RDW の文字項目の埋め文字には `pad_char: "　"` を指定してください。CP930 / CP939 の文字項目は SO/SI を含む独立した文字列として扱い、`length` はシフト制御バイトを含むバイト数です。不正なバイト列と変換不能文字はエラーになります。[文字コードの詳細](docs/SPEC.md#65-encoding-の解決と文字コード変換)を参照してください。
 

@@ -137,6 +137,7 @@ pub(super) fn compile(
     let df_schema =
         DFSchema::try_from(condition_schema.as_ref().clone()).map_err(|e| bad(&e.to_string()))?;
     let context = SessionContext::new();
+    crate::functions::register(&context);
     let mut conditions: Vec<Condition> = Vec::new();
     let mut field_conditions = Vec::new();
     for field in &fields {
