@@ -16,7 +16,7 @@ path = "benchmarks/parquet_fixture.rs"
 
 [dependencies]
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 chrono = "0.4"
 chrono-tz = "0.10"
 clap = { version = "4.6", features = ["derive", "string"] }
@@ -30,17 +30,17 @@ icu_datetime = "=2.4.0"
 icu_locale = "=2.4.0"
 jtc-utils = "=0.1.0"
 memchr = "2"
-mlua = { version = "0.11", features = ["luajit", "vendored", "serialize", "send"] }
+mlua = { version = "0.12", features = ["luajit", "vendored", "serialize", "send"] }
 parquet = { version = "=59.3.1", default-features = false, features = ["arrow", "snap", "flate2-zlib-rs", "brotli", "lz4", "zstd"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
-yaml-rust2 = "0.10"
+yaml-rust2 = "0.13"
 writeable = "0.6"
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1", features = ["signal"] }

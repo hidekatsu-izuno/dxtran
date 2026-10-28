@@ -1,4 +1,6 @@
-//! Unicode datetime SQL functions backed by ICU4X.
+//! SQL functions for COBOL numeric editing and ICU4X Unicode datetimes.
+mod cobol;
+
 use crate::{
     config::Field as FieldConfig,
     datetime::{
@@ -22,8 +24,9 @@ use datafusion::{
 };
 use std::collections::HashMap;
 
-/// Register dxtran's ICU datetime functions in a DataFusion session.
+/// Register dxtran's SQL functions in a DataFusion session.
 pub fn register(context: &SessionContext) {
+    cobol::register(context);
     for kind in [Kind::Char, Kind::Date, Kind::Timestamp, Kind::Time] {
         context.register_udf(ScalarUDF::from(IcuFunction {
             kind,

@@ -39,6 +39,15 @@ SELECT icu_to_time('13:02:03', 'HH:mm:ss');
 -- 13:02:03
 ```
 
+`cobol_to_char(数値, 書式)` は COBOL の数値 PICTURE 編集を行います。`9`・`Z`・`*`、桁区切り、前後の符号、`CR` / `DB`、固定・浮動の `$`、`9(n)` 等の繰り返しに対応し、空白を含む固定幅の文字列を返します。Decimal と整数は浮動小数点を経由せず処理します。数値編集項目への `MOVE` と同じく、書式からはみ出す整数部の上位桁と小数部の下位桁は切り捨てます。[対応書式と制限](docs/SPEC.md#102-cobol-数値フォーマット関数)を参照してください。
+
+```sql
+SELECT cobol_to_char(1234.56, 'ZZZ,ZZ9.99');  -- '  1,234.56'
+SELECT cobol_to_char(-123.45, 'ZZZ9.99CR');   -- ' 123.45CR'
+SELECT cobol_to_char(123.45, '$$$$9.99');     -- ' $123.45'
+SELECT cobol_to_char(123.45, '9(5)V99');      -- '0012345'
+```
+
 CSV・fixed・RDW の入力定義は全列の名前・型を指定します。CSV の未引用の空フィールドは NULL、引用した空フィールドは空文字です。`output.fields` の部分指定では SQL の列順を保ったまま書式を設定できます。fixed / RDW は全物理項目を定義し、隙間は名前のない FILLER で明示します。23種類の型、文字コード、ビット列、日時パターン、NULL 表現を共通のレイアウトで処理します。
 
 文字項目の `input.fields` / `output.fields` には `trim: false | left | right | both` を指定できます。`false` は保持、`left` は先頭、`right` は末尾、`both` は両端の空白を除去します。fixed / RDW で `pad_char` を指定した場合はその文字が対象です。固定幅出力では trim 後に項目幅まで再度埋めます。例えば長さ5・`trim: both` の項目に `"  A  "` を出力すると `"A    "` になります。[省略時の動作と詳細](docs/SPEC.md#74-文字項目日付時刻binarybits)を参照してください。
