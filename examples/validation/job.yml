@@ -1,0 +1,43 @@
+params:
+  region: {default: "'east'"}
+  business_date: {default: "DATE '2026-11-06'"}
+  expected_count: {default: 3}
+
+input:
+  - id: sales
+    format: csv
+    path: data/sales.csv
+    encoding: utf-8
+    fields:
+      - {name: customer_id, source_name: 顧客コード}
+      - {name: amount, source_name: 売上金額, type: decimal, precision: 8}
+      - {name: region, source_name: 地域}
+    after:
+      when: COUNT(*) <> $expected_count OR SUM(amount) <> 60
+      level: error
+      message: 入力の件数または合計が想定と異なります。
+
+process:
+  - id: selected
+    sql: SELECT customer_id, amount FROM sales WHERE region = $region
+    before:
+      from: sales
+      when: COUNT(*) = 0
+      level: error
+      message: 入力が空です。
+    after:
+      when: COUNT(*) = 0
+      level: error
+      message: 対象地域の売上がありません。
+
+output:
+  - id: result
+    format: csv
+    path: out/records.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: SELECT customer_id, amount, CAST($business_date AS DATE) AS business_date FROM selected
+    before:
+      when: SUM(amount) <= 0
+      level: error
+      message: 出力合計が正数ではありません。

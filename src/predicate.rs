@@ -1,8 +1,15 @@
 //! Shared SQL Boolean expression compilation for layout conditions and checks.
 use datafusion::{
     arrow::datatypes::DataType,
-    common::DFSchema,
+    common::{
+        DFSchema,
+        tree_node::{Transformed, TreeNode},
+    },
     error::{DataFusionError, Result},
+    logical_expr::{
+        Expr,
+        simplify::{ExprSimplifyResult, SimplifyContext},
+    },
     physical_expr::PhysicalExpr,
     prelude::SessionContext,
 };
@@ -35,6 +42,27 @@ pub(crate) fn compile(
             "condition requires a deterministic SQL expression".into(),
         ));
     }
+    // arrow_cast encodes exact parameter types, but must become a native Cast
+    // before physical evaluation. Do not fold other expressions here: their
+    // failures must retain the record check's execution timing and error code.
+    let info = SimplifyContext::builder()
+        .with_schema(Arc::new(schema.clone()))
+        .build();
+    let logical = logical
+        .transform_up(|expr| {
+            if let Expr::ScalarFunction(mut function) = expr {
+                if function.func.name() == "arrow_cast" {
+                    match function.func.simplify(function.args, &info)? {
+                        ExprSimplifyResult::Simplified(expr) => return Ok(Transformed::yes(expr)),
+                        ExprSimplifyResult::Original(args) => function.args = args,
+                    }
+                }
+                Ok(Transformed::no(Expr::ScalarFunction(function)))
+            } else {
+                Ok(Transformed::no(expr))
+            }
+        })?
+        .data;
     let expression = context.create_physical_expr(logical, schema)?;
     if expression.data_type(schema.as_arrow())? != DataType::Boolean {
         return Err(DataFusionError::Plan(

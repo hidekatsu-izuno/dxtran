@@ -38,6 +38,31 @@ impl RecordLayout {
     }
     fn compile(d: &Dataset, result: Option<SchemaRef>) -> Result<Self> {
         let output = result.is_some();
+        let mut external_names = BTreeSet::new();
+        for field in &d.fields {
+            if field.source_name.is_some()
+                && (output
+                    || d.format != Format::Csv
+                    || !d.csv.as_ref().is_none_or(|csv| csv.header))
+            {
+                return Err(
+                    Error::config("source_name requires CSV input with header: true").context(
+                        field
+                            .origin
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                    ),
+                );
+            }
+            if !output
+                && d.format == Format::Csv
+                && let Some(name) = field.source_name.as_ref().or(field.name.as_ref())
+                && !external_names.insert(name)
+            {
+                return Err(Error::config(format!("duplicate CSV source name '{name}'")));
+            }
+        }
         if d.format == Format::Lua {
             if let Some(schema) = result {
                 return crate::sink::lua::layout(d, schema);

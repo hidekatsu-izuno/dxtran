@@ -65,6 +65,9 @@ impl Checks {
         let context = SessionContext::new();
         crate::functions::register(&context);
         for (i, check) in dataset.check.iter().enumerate() {
+            if check.from.is_some() {
+                return Err(Error::config("from is only supported in process.before"));
+            }
             let origin = check
                 .when_origin
                 .as_ref()

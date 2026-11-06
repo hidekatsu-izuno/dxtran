@@ -242,6 +242,8 @@ def fixtures():
     put("bstring/expected/fullwidth.csv", "encoding,original_bytes,trimmed,padded,padded_bytes\n" + "".join(
         f"{encoding},{original},日本,日本{'　' * padding},12\n"
         for encoding, original, padding in fullwidth))
+    put("validation/data/sales.csv", "顧客コード,売上金額,地域\nC01,10,east\nC02,20,east\nC03,30,west\n")
+    put("validation/expected/records.csv", "customer_id,amount,business_date\nC01,10,2026-11-06\nC02,20,2026-11-06\n")
     return files
 
 
@@ -250,6 +252,7 @@ def manifest():
         return {"file": file, "outputs": {"out/" + name: "expected/" + name for name in outputs}}
 
     cases = [
+        ("validation", [job("job.yml", "records.csv")]),
         ("exit_codes", [job("job.yml", "records.csv"),
             {"file": "input_error.yml", "exit_code": 12, "scan_exit_code": 12,
              "diagnostic": "入力金額が負のため終了コード12で終了します。", "absent": ["out/input_error.csv"]},

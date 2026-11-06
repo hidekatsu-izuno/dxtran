@@ -11,6 +11,14 @@ use std::{collections::BTreeSet, ffi::OsString, path::PathBuf};
 )]
 pub struct Cli {
     #[arg(
+        long = "param",
+        short = 'p',
+        global = true,
+        value_name = "NAME=VALUE",
+        help = "Set a declared business parameter to a string value (repeatable)"
+    )]
+    pub(super) params: Vec<String>,
+    #[arg(
         long,
         global = true,
         help = "Allow trusted Lua/FFI with full process privileges, including during check/explain (not a sandbox)"

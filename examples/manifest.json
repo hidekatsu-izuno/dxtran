@@ -1,5 +1,16 @@
 [
   {
+    "directory": "validation",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.csv": "expected/records.csv"
+        }
+      }
+    ]
+  },
+  {
     "directory": "exit_codes",
     "jobs": [
       {

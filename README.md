@@ -11,6 +11,20 @@ cargo run -- run examples/basic/job.yml --threads 4 --memory-limit 512MiB
 
 サンプルの結果は `examples/basic/totals.csv` に出力されます。相対パスは、その値を記述した YAML ファイルがあるディレクトリから解決します。既存出力を置き換えるには出力定義に `mode: overwrite` を指定します。
 
+業務パラメーターはジョブ直下の `params` に宣言し、`--param X=Y` / `-p X=Y` で渡します。CLI値は文字列、`default` はSQL式です。`default` がない宣言は必須で、未宣言名・重複指定もエラーになります。SQLや各 `when` から `$X` で参照できます。[詳細](docs/SPEC.md#41-業務パラメーター)を参照してください。
+
+```yaml
+params:
+  branch: {}
+  business_date: {default: CURRENT_DATE}
+```
+
+```sh
+dxt run job.yml -p branch=tokyo --param business_date=2026-11-06
+```
+
+CSVの外部ヘッダー名がSQL列名と異なる場合は、`input.fields` に `{name: customer_id, source_name: 顧客コード}` と指定します。SQLでは `customer_id` を参照し、省略時は従来どおり `name` と照合します。`source_name` はヘッダー付きCSV入力専用で、列順・列数も一致させます。
+
 入力・出力の `path` は YAML では省略でき、`check`・`explain`・`run` の引数で `--input.<id>.path` / `--output.<id>.path` として指定できます。引数は YAML の値より優先し、引数の相対パスはコマンド実行時のカレントディレクトリから解決します。各ファイルのパスは YAML または引数のいずれかで必ず指定してください。存在しない ID、空のパス、同じ引数の重複指定は設定エラーです。`=` で値を結ぶ形式と、空白で区切る形式の両方を使えます。
 
 ```sh
@@ -96,6 +110,8 @@ check:
     level: error
     message: "金額が負のため異常終了します。"
 ```
+
+全体の件数・合計等は `input.after`、`process.before` / `after`、`output.before` で検査できます。例えば `after: {when: "COUNT(*) = 0", level: error, message: "入力が0件です。"}` は0件の入力で異常終了します。各ルールは0件でも1回評価し、TRUEで指定動作を行います。`process.before` では検査対象の直接参照テーブルを `from` に指定します（参照先が1つなら省略可）。検査する境界は一時ファイルへ保存して再利用し、複数出力でも検査を繰り返しません。[設定例](examples/validation/job.yml)と[詳細](docs/SPEC.md#681-集計チェック)を参照してください。
 
 CSV・固定長・RDW は、入力・出力それぞれの直下に `compression: gzip` または `compression: zstd` を指定すると、ファイル全体をストリームで展開・圧縮します。省略時は非圧縮で、拡張子による自動判定は行いません。入力の展開後に文字コード変換・レコード解析を行い、出力は文字コード変換・レコード組み立て後に圧縮します。[圧縮形式の相互変換と読み戻しのサンプル](examples/compression/job.yml)を用意しています。
 

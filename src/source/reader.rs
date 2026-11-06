@@ -90,11 +90,16 @@ impl InputReader {
                         e.context(format!("input {} {}", dataset.id, dataset.path.display()))
                     })?
                     .ok_or_else(|| Error::input("required CSV header is missing"))?;
-                if header.iter().map(|c| c.value.as_str()).ne(layout
-                    .schema
-                    .fields()
+                if header
                     .iter()
-                    .map(|f| f.name().as_str()))
+                    .map(|c| c.value.as_str())
+                    .ne(layout.fields.iter().map(|f| {
+                        f.spec
+                            .source_name
+                            .as_deref()
+                            .or(f.spec.name.as_deref())
+                            .unwrap()
+                    }))
                 {
                     return Err(Error::input(
                         "CSV header names, count and order must exactly match input.fields",

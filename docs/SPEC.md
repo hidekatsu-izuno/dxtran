@@ -1,6 +1,6 @@
 # dxtran 設計仕様書
 
-状態: 初期設計案 / 仕様版: 0.21 / 作成日: 2026-10-22 / 更新日: 2026-10-29
+状態: 初期設計案 / 仕様版: 0.22 / 作成日: 2026-10-22 / 更新日: 2026-11-06
 
 ## 1. 目的と設計上の前提
 
@@ -10,7 +10,7 @@ dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長、
 
 初期版は Rust 製の単一プロセス CLI とし、ローカルファイルを対象とする。既存リポジトリの Rust 設定に合わせた選択であり、GUI やサーバーは対象としない。本書は設計であり、記載するコマンドや設定はこれから実装する。
 
-依頼文の `ouput` は `output` の誤記と解釈する。正式な最上位キーは `input`、`process`、`output` の3つだけとし、互換エイリアスは設けない。
+依頼文の `ouput` は `output` の誤記と解釈する。正式な入出力・処理のキーは `input`、`process`、`output` とし、互換エイリアスは設けない。
 
 ## 2. 対応範囲
 
@@ -64,7 +64,7 @@ process: []
 output: []
 ```
 
-- import 展開後の最上位で使えるキーは `input`、`process`、`output`、任意の `lua` / `exit_codes` とする。入出力・process は配列で、`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。ジョブ直下の `lua` は共有変数と任意の開始・終了処理、`exit_codes` は14.1節の終了コード置換を指定するマップである。
+- import 展開後の最上位で使えるキーは `input`、`process`、`output`、任意の `params` / `lua` / `exit_codes` とする。入出力・process は配列で、`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。ジョブ直下の `lua` は共有変数と任意の開始・終了処理、`exit_codes` は14.1節の終了コード置換を指定するマップである。
 - 各 output は `sql` を必須とする。`process` を省略した場合や `process: []` でも、`output.sql` に編集・結合・集計を書ける。単純な形式変換も `SELECT * FROM sales` 等の SQL で入力を指定する。
 - 項目定義は形式共通で input / output 直下の `fields` に置く。CSV の共通設定は `csv`、fixed のレコード設定は `fixed`、RDW の共通設定は `rdw` にまとめる。
 - 各定義に `id` を付ける。`input` と `process` の ID は同じ SQL テーブル名の名前空間を共有し、重複を禁止する。出力 ID は出力内で一意とする。
@@ -76,6 +76,27 @@ output: []
 - 初期版は1入力定義につき1ファイル、1出力定義につき1ファイル。glob、ディレクトリ入力、標準入出力は扱わない。
 - 環境変数やテンプレートの展開は行わない。実行時のメモリ量等は CLI オプションで指定する。
 - サポートする設定文法は dxtran のバージョンと対応させる。破壊的変更は互換性変更として明示する。
+
+### 4.1 業務パラメーター
+
+ジョブ直下の `params` に、受け渡せるパラメーターをマップで事前定義する。名前は `[A-Za-z_][A-Za-z0-9_]*` とし、大文字・小文字を区別する。宣言ごとの設定は任意の `default` だけとする。`import` で宣言を共有・上書きできる。
+
+```yaml
+params:
+  branch: {}                        # 必須
+  business_date:
+    default: CURRENT_DATE           # SQL式を1回評価
+  minimum_amount:
+    default: "100 * 2"
+  status:
+    default: "'A'"                  # SQL文字列リテラル
+```
+
+`--param branch=tokyo` または `-p branch=tokyo` を繰り返して渡す。CLIの値は常に文字列とし、最初の `=` だけで名前と値を分割する。空文字も指定できる。`default` がなくCLIでも渡されなかった宣言、未宣言名、同じ名前の重複、`NAME=VALUE` 以外の指定は設定エラーとする。未使用の必須宣言も省略できない。この検証は `check`・`explain`・`run` に共通である。
+
+`default` はSQLのスカラー式とし、選択された既定値を計画前に1回評価し、SQLの型を維持して共有する。数値・真偽値はYAMLの数値・真偽値でも指定できる。文字列はSQLリテラルとして引用する。SQLの `NULL` は `"NULL"` と書く。列・テーブル・集約・ウィンドウ・サブクエリ・他のパラメーターへの参照は使用できない。上書きされた既定値も構文・参照・型を検証する。
+
+`process.sql`、`output.sql`、レコード条件の `when`、各チェックの `when` から `$branch` の形式で参照する。名前やファイルパス等の置換は行わない。値はSQLの構文木でリテラルとして渡すため、引用符・改行・`=` 等を含むCLI値も文字列のまま扱う。CLI値を日付・数値として利用する場合は必要に応じて `CAST($business_date AS DATE)` 等で変換する。展開後ハッシュには実際のパラメーター値も反映する。
 
 ## 5. 設定の全体例
 
@@ -182,6 +203,7 @@ output:
 | `encoding` | parquet / lua 以外で必須 | encoding_rs と jtc-utils が認識する文字コードラベル。6.5節参照。parquet / lua では指定不可 |
 | `fields` | parquet 以外で必須 | CSV は列名・type・NULL 許容、fixed / lines / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
 | `check` | 任意 | レコード条件による異常終了・ログ出力。6.8節参照 |
+| `after` | 任意 | 入力全体の集計チェック。6.8.1節参照 |
 | `csv` | CSV で任意 | ヘッダー・区切り・引用符の設定 |
 | `fixed` | fixed で必須 | record_separator と、任意の record_length |
 | `lines` | lines で任意 | line_ending、record_length、trim_trailing_spaces。6.3.1節参照 |
@@ -192,7 +214,7 @@ output:
 ### 6.2 CSV と NULL
 
 - スキーマ推論は行わず、全列の名前・型・列順を `input.fields` で指定する。`type` は `string`（既定）、`decimal`、`boolean`、`date`、`time`、`timestamp`、`binary`。文字列として読む識別子は先頭ゼロを保持する。`bits`、バイト順付きの数値型、ゾーン / パック系は fixed / rdw の項目で使う。bits から展開した Boolean 列は、通常の boolean として CSV へ出力できる。
-- `header` の既定値は `true`。ヘッダーがある場合はスキーマの列名・順序・列数と完全一致させる。ない場合は位置で対応付ける。
+- `header` の既定値は `true`。ヘッダーは各 `input.fields` の `source_name`（省略時は `name`）と、名前・順序・列数が完全一致する必要がある。`source_name` はデコード後のCSVヘッダー名で、日本語・空白・記号もそのまま指定できる。SQLでは `name` だけを参照する。外部列名の重複は設定エラーとする。`source_name` はヘッダー付きCSV入力専用で、`header: false`・他形式・出力には指定できない。ヘッダーがない場合は位置で対応付ける。
 - `delimiter` は既定でカンマ、`quote` は二重引用符。UTF-8 変換後の ASCII 1文字を指定し、互いに異なる値にする。
 - クォート内の改行・区切り文字を認め、クォート文字は同じ文字の二重化でエスケープする。バックスラッシュは通常の文字として扱う。
 - 引用符のない空フィールドを NULL、引用符で囲まれた空フィールドを長さ0の文字列とする。`null_value` の設定は設けない。
@@ -439,6 +461,45 @@ check:
 
 [examples/checks](../examples/checks/job.yml) に入力の警告・通知、出力の通知、入力・出力それぞれの異常終了を示すジョブを収録する。
 
+#### 6.8.1 集計チェック
+
+レコード単位の `check` に加え、`input.after`、`process.before`、`process.after`、`output.before` に同じ `when` / `level` / `message` のマップまたは配列を指定できる。集計対象全体に対して、各ルールを記載順に1回評価する。0件でも評価し、TRUEで動作、FALSE / NULLなら何もしない。
+
+| 設定 | 集計対象 |
+| --- | --- |
+| `input.after` | 入力を最後までデコード・行チェックした結果。後続SQLのWHERE・LIMITより前 |
+| `process.before` | `from` で指定する直接の入力・process全体。対象processのSQLより前 |
+| `process.after` | 対象processのSQL結果全体。後続のSQLより前 |
+| `output.before` | 出力SQLの結果全体。行チェック・書式変換・writer作成より前 |
+
+```yaml
+input:
+  - id: sales
+    # format/path/fields等は通常どおり指定
+    after:
+      when: COUNT(*) = 0 OR SUM(amount) < 0
+      level: error
+      message: 入力件数または金額合計が不正です。
+process:
+  - id: active
+    sql: SELECT * FROM sales WHERE status = 'A'
+    before:
+      from: sales
+      when: COUNT(*) > 1000000
+      level: warn
+      message: 入力件数が多くなっています。
+    after:
+      when: COUNT(*) = 0
+      level: error
+      message: 抽出後の明細がありません。
+```
+
+`process.before.from` はSQLで直接参照するテーブルIDを指定する。直接参照が1つの場合だけ省略でき、JOIN等で複数ある場合は必須。対象外のテーブルは指定できない。`from` はほかのタイミングや行チェックには指定できない。条件式では `COUNT` / `SUM` / `AVG` / `MIN` / `MAX` 等とスカラー式を組み合わせられる。非集約の列参照・ウィンドウ・サブクエリ・volatile関数・Boolean以外の式は設定エラーとする。
+
+対象境界は一時領域のArrow IPCへ順次保存し、検査後に同じデータを後続へ渡す。複数出力から参照しても対象境界のSQL・走査・行チェック・集計チェックを繰り返さず、元の行順も引き継ぐ。集計チェックがない通常経路は従来どおりストリーム処理する。入力・processの境界は依存順、出力は定義順に処理する。`run` では出力から到達する入力・processだけを実行する。
+
+`warn` / `info` のログは `event: check` に `aggregate: true`、`timing`、`from`、`rows` を追加し、レコード番号は付けない。`error` と条件式の実行エラーは入力3・process4・出力5で停止し、全出力の公開を中止する。通常の `check` / `explain` はルールの静的検証だけ、`check --scan` は全入力の行チェックと `input.after` を実行する。process・出力の集計チェックは `run` で実行する。
+
 ### 6.9 LuaJIT 外部テーブル
 
 Lua の実行は既定で拒否する。Lua 入出力または最上位の `lua` を含むジョブは、CLI の `--allow-lua` による明示許可を必要とする。YAML では自己許可できない。これは信頼済みコードをプロセスと同じ権限で実行するための許可であり、サンドボックスではない。check / explain も許可時にはトップレベルを評価する。[セキュリティ境界と隔離の設計](LUA_SECURITY.md)を参照する。
@@ -519,6 +580,7 @@ fixed のレコード長は全項目の最大終端（または同じ値の `fix
 | キー | 意味 |
 | --- | --- |
 | `name` | 公開列名。bits では領域の識別名とし、子ビットの name を列名にする。FILLER は省略 |
+| `source_name` | ヘッダー付きCSV入力の外部列名。省略時は `name`。列順は `fields` の順と完全一致させる |
 | `when` | fixed / lines / rdw のレコード条件を表す Boolean の SQL 式。7.1.1節を参照 |
 | `offset` | 0始まりの本体内バイト位置。省略時は前項目に続ける |
 | `length` | 正のバイト長。rdw の末尾の `string` / `bstring` / `binary` は `rest` も可。CSV では指定しない |
@@ -1289,6 +1351,7 @@ SELECT icu_decode(icu_rpad(icu_encode('日本', 'cp939'), 'cp939', 8, '　'), 'c
 | `mode` | 任意 | ファイルは `error_if_exists`（既定）/ `overwrite`。Lua は `append`（既定）/ `overwrite` / `merge` |
 | `fields` | fixed / lines / rdw で必須、CSV で任意、parquet / lua で指定不可 | 項目定義の配列。CSV は name で結果列を参照し、必要な項目だけ出力設定を指定可能 |
 | `check` | 任意 | SQL 結果の各行への異常終了・ログ出力。6.8節参照 |
+| `before` | 任意 | SQL結果全体の集計チェック。6.8.1節参照 |
 | `csv` | CSV で任意 | CSV 共通設定。区切り・引用符・ヘッダー・line_ending と、quote_style の共通既定値 |
 | `fixed` | fixed で必須 | record_separator と、任意の record_length。入力と同じ設定 |
 | `lines` | lines で任意 | line_ending、record_length、trim_trailing_spaces。6.3.1節参照 |
@@ -1544,6 +1607,9 @@ dxt run job.yml --memory-limit 1GiB --temp-dir ./tmp --threads 4
 
 # 入出力ファイルを指定する（YAML の path は省略可能）
 dxt run job.yml --input.sales.path=sales.csv --output.details.path=details.csv
+
+# 宣言済み業務パラメーターを文字列で渡す
+dxt run job.yml -p branch=tokyo --param business_date=2026-11-06
 ```
 
 `--input.<id>.path` と `--output.<id>.path` は `check`・`explain`・`run` で共通して使える。`<id>` は配列の位置ではなく定義の `id` とし、引数の値は import 展開後の YAML の `path` を上書きする。`--input.sales.path=sales.csv` と `--input.sales.path sales.csv` の両方を受け付ける。CLI の相対パスは起動時のカレントディレクトリから解決し、YAML の相対パスは従来どおり記述元から解決する。存在しない ID、空のパス、同じオプションの重複、YAML と CLI の両方での未指定は設定エラーとする。展開結果のハッシュには CLI によるパスの上書きも反映する。

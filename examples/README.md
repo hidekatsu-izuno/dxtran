@@ -145,6 +145,20 @@ target/debug/dxt run examples/checks/output_abend.yml
 
 通常の `check` / `explain` は条件式を検証するだけでメッセージを出しません。`check --scan` は入力のチェックを実行し、出力のチェックは `run` で実行します。`check` を持つ入出力はログと異常終了位置の順序を保つため、レコード順に変換・検査します。
 
+## 集計チェック・業務パラメーター・CSV列名マッピング
+
+[validation/job.yml](validation/job.yml) は日本語CSVヘッダーを `source_name` でSQL列名へ対応付け、4つのタイミングで件数・合計を検査します。`params` の `default` はSQL式で、CLIからは文字列として上書きできます。
+
+```sh
+mkdir -p examples/validation/out
+target/debug/dxt check examples/validation/job.yml --scan
+target/debug/dxt run examples/validation/job.yml
+cmp examples/validation/expected/records.csv examples/validation/out/records.csv
+target/debug/dxt run examples/validation/job.yml -p region=west -p business_date=2026-11-07
+```
+
+必須にするパラメーターは `region: {}` のように `default` を省略します。宣言がない名前、重複指定、必須値の未指定は `check` / `explain` / `run` でエラーになります。
+
 ## 全サンプルを検証する
 
 ```sh

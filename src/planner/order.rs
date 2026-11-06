@@ -208,21 +208,37 @@ impl OrderPlanner {
 
     fn rewrite_scan(&mut self, scan: &TableScan) -> Result<Ordered> {
         let provider = source_as_provider(&scan.source)?;
-        if let Some(source) = provider.downcast_ref::<SourceTable>() {
+        if provider.downcast_ref::<SourceTable>().is_some()
+            || provider
+                .downcast_ref::<crate::snapshot::SnapshotTable>()
+                .is_some()
+        {
             let name = self.name();
-            let source = source.internal(&name);
-            let count = source.layout.schema.fields().len();
+            let (source, count): (Arc<dyn datafusion::catalog::TableProvider>, usize) =
+                if let Some(source) = provider.downcast_ref::<SourceTable>() {
+                    (
+                        Arc::new(source.internal(&name)),
+                        source.layout.schema.fields().len(),
+                    )
+                } else {
+                    let source = provider
+                        .downcast_ref::<crate::snapshot::SnapshotTable>()
+                        .unwrap();
+                    (
+                        Arc::new(source.internal(&name)),
+                        datafusion::catalog::TableProvider::schema(source)
+                            .fields()
+                            .len(),
+                    )
+                };
             let mut projection = scan
                 .projection
                 .clone()
                 .unwrap_or_else(|| (0..count).collect());
             projection.push(count);
-            let scan = TableScanBuilder::new(
-                scan.table_name.clone(),
-                provider_as_source(Arc::new(source)),
-            )
-            .with_projection(Some(projection))
-            .build()?;
+            let scan = TableScanBuilder::new(scan.table_name.clone(), provider_as_source(source))
+                .with_projection(Some(projection))
+                .build()?;
             let plan = LogicalPlan::TableScan(scan);
             let key = key_column(&plan, &name);
             Ok(Ordered { plan, key })

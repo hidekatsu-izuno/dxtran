@@ -1,3 +1,4 @@
+mod aggregate;
 mod arrow_value;
 mod check;
 mod compression;
@@ -12,10 +13,12 @@ pub mod functions;
 pub mod layout;
 mod lua;
 mod parallel;
+mod params;
 mod parquet_io;
 pub mod planner;
 mod predicate;
 pub mod publication;
 pub mod runtime;
 pub mod sink;
+mod snapshot;
 pub mod source;

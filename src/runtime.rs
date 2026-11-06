@@ -1,4 +1,4 @@
-mod cooperative;
+pub(crate) mod cooperative;
 mod csv;
 mod fixed;
 mod signals;
@@ -33,7 +33,7 @@ fn phase(code: u8) -> &'static str {
         _ => "output",
     }
 }
-fn original_error(e: datafusion::error::DataFusionError) -> Error {
+pub(crate) fn original_error(e: datafusion::error::DataFusionError) -> Error {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&e);
     while let Some(s) = source {
         if let Some(e) = s.downcast_ref::<Error>() {
@@ -81,6 +81,7 @@ async fn execute(cli: Cli, run_id: &str, exit_codes: &mut config::ExitCodes) -> 
         Command::Run { job, resources } => (job, resources, Operation::Run),
     };
     let mut job = config::load_with_paths_and_exit_codes(&path, &cli.paths, exit_codes)?;
+    job = job.with_params(&cli.params).await?;
     if cli.allow_lua {
         job.allow_unsafe_lua();
     }
@@ -104,7 +105,7 @@ async fn execute(cli: Cli, run_id: &str, exit_codes: &mut config::ExitCodes) -> 
             job.lua_runtime.start()?;
         }
         if matches!(operation, Operation::Check { scan: true }) {
-            scan_inputs(&planned).await?;
+            scan_inputs(&planned, &resources, &temp).await?;
         }
         if !matches!(operation, Operation::Run) {
             if matches!(operation, Operation::Check { .. }) {
@@ -137,6 +138,19 @@ async fn run_job(
         .and_then(|_| crate::filesystem::create_staging_dir(&spill))
         .map_err(|e| Error::output(e.to_string()))?;
     let ctx = context(resources, Some(&spill))?;
+    if planned.hooks.iter().any(|hook| hook.active) {
+        let checks = work.path().join("checks");
+        crate::filesystem::create_staging_dir(&checks).map_err(|e| Error::output(e.to_string()))?;
+        for (index, hook) in planned
+            .hooks
+            .iter()
+            .enumerate()
+            .filter(|(_, hook)| hook.active)
+        {
+            hook.run(&ctx, &checks.join(format!("{index}.arrow")))
+                .await?;
+        }
+    }
     let staged = staging::stage_outputs(&ctx, job, planned, resources, &outputs, run_id).await?;
     publication::publish(job, &staged)?;
     // Drop DataFusion's disk manager before removing this run's working directory.
@@ -213,8 +227,41 @@ async fn validate_plans(
     }
     Ok(())
 }
-async fn scan_inputs(planned: &planner::PlannedJob) -> Result<()> {
+async fn scan_inputs(
+    planned: &planner::PlannedJob,
+    resources: &Resources,
+    temp: &std::path::Path,
+) -> Result<()> {
+    let workspace = if planned.hooks.iter().any(|h| h.input && !h.after.is_empty()) {
+        Some(
+            crate::filesystem::create_workspace(temp, "dxtran-scan-")
+                .map_err(|e| Error::output(e.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let scan_context = if let Some(workspace) = &workspace {
+        let spill = workspace.path().join("spill");
+        crate::filesystem::create_staging_dir(&spill).map_err(|e| Error::output(e.to_string()))?;
+        Some(context(resources, Some(&spill))?)
+    } else {
+        None
+    };
     for (source, layout) in &planned.inputs {
+        if let Some(hook) = planned
+            .hooks
+            .iter()
+            .find(|h| h.input && h.id == source.dataset.id && !h.after.is_empty())
+        {
+            let path = workspace
+                .as_ref()
+                .unwrap()
+                .path()
+                .join(format!("{}.arrow", hook.id));
+            let count = hook.run(scan_context.as_ref().unwrap(), &path).await?;
+            println!("{}: {count} records scanned", hook.id);
+            continue;
+        }
         let dataset = source.dataset.clone();
         let layout = layout.clone();
         let count = tokio::task::spawn_blocking(move || -> Result<u64> {
@@ -228,6 +275,12 @@ async fn scan_inputs(planned: &planner::PlannedJob) -> Result<()> {
         .await
         .map_err(|e| Error::sql(e.to_string()))??;
         println!("{}: {count} records scanned", source.dataset.id);
+    }
+    drop(scan_context);
+    if let Some(workspace) = workspace {
+        workspace
+            .close()
+            .map_err(|e| Error::output(e.to_string()))?;
     }
     Ok(())
 }

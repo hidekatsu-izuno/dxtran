@@ -445,6 +445,7 @@ pub struct Bit {
 #[serde(deny_unknown_fields)]
 pub struct Field {
     pub name: Option<String>,
+    pub source_name: Option<String>,
     pub when: Option<String>,
     pub offset: Option<usize>,
     pub length: Option<Length>,
@@ -505,6 +506,7 @@ fn deserialize_trim<'de, D: serde::Deserializer<'de>>(
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
+    pub from: Option<String>,
     pub when: String,
     pub level: CheckLevel,
     pub message: String,
@@ -547,6 +549,10 @@ pub struct Dataset {
     pub fields: Vec<Field>,
     #[serde(default, deserialize_with = "checks")]
     pub check: Vec<Check>,
+    #[serde(default, deserialize_with = "checks")]
+    pub before: Vec<Check>,
+    #[serde(default, deserialize_with = "checks")]
+    pub after: Vec<Check>,
     pub csv: Option<Csv>,
     pub fixed: Option<Fixed>,
     pub lines: Option<Lines>,
@@ -575,12 +581,18 @@ impl Dataset {
 pub struct Process {
     pub id: String,
     pub sql: String,
+    #[serde(default, deserialize_with = "checks")]
+    pub before: Vec<Check>,
+    #[serde(default, deserialize_with = "checks")]
+    pub after: Vec<Check>,
     #[serde(skip)]
     pub origin: Option<Origin>,
 }
 #[derive(Clone, Debug)]
 pub struct Job {
     pub exit_codes: ExitCodes,
+    pub params: BTreeMap<String, Param>,
+    pub(crate) params_bound: bool,
     pub lua: Option<JobLua>,
     pub(crate) lua_runtime: crate::lua::Runtime,
     pub input: Vec<Dataset>,
@@ -588,6 +600,27 @@ pub struct Job {
     pub output: Vec<Dataset>,
     pub hashes: BTreeMap<PathBuf, String>,
     pub expanded_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Param {
+    #[serde(default, deserialize_with = "sql_default")]
+    pub default: Option<String>,
+    #[serde(skip)]
+    pub origin: Option<Origin>,
+}
+
+fn sql_default<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::String(value) => Ok(Some(value)),
+        value @ (Value::Number(_) | Value::Bool(_)) => Ok(Some(value.to_string())),
+        _ => Err(serde::de::Error::custom(
+            "parameter default must be a SQL expression",
+        )),
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -633,6 +666,11 @@ impl ExitCodes {
     }
 }
 impl Job {
+    /// Bind declared business parameters. CLI values are strings; defaults are SQL expressions.
+    pub async fn with_params(mut self, values: &[String]) -> Result<Self> {
+        crate::params::bind(&mut self, values).await?;
+        Ok(self)
+    }
     /// Explicitly trust all Lua code and native dependencies used by this job.
     /// Call only for operator-approved code; YAML cannot grant this permission.
     pub fn allow_unsafe_lua(&mut self) {
@@ -734,15 +772,14 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
             let mut d: Dataset = n.decode()?;
             d.origin = Some(n.origin.clone());
             d.sql_origin = n.get("sql").map(|n| n.origin.clone());
-            if let Some(raw) = n.get("check") {
-                let nodes = match &raw.kind {
-                    Kind::Sequence(nodes) => nodes.iter().collect::<Vec<_>>(),
-                    _ => vec![raw],
-                };
-                for (check, raw) in d.check.iter_mut().zip(nodes) {
-                    check.origin = Some(raw.origin.clone());
-                    check.when_origin = raw.get("when").map(|n| n.origin.clone());
-                }
+            check_origins(&mut d.check, n.get("check"));
+            check_origins(&mut d.before, n.get("before"));
+            check_origins(&mut d.after, n.get("after"));
+            if (!output && n.get("before").is_some()) || (output && n.get("after").is_some()) {
+                return Err(
+                    Error::config("input supports after; output supports before")
+                        .context(&n.origin),
+                );
             }
             if d.path.as_os_str().is_empty() {
                 return Err(Error::config("path must not be empty").context(&path.origin));
@@ -825,6 +862,19 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
             Ok(d)
         })
         .collect()
+}
+fn check_origins(checks: &mut [Check], node: Option<&Node>) {
+    let Some(raw) = node else {
+        return;
+    };
+    let nodes = match &raw.kind {
+        Kind::Sequence(nodes) => nodes.iter().collect::<Vec<_>>(),
+        _ => vec![raw],
+    };
+    for (check, raw) in checks.iter_mut().zip(nodes) {
+        check.origin = Some(raw.origin.clone());
+        check.when_origin = raw.get("when").map(|n| n.origin.clone());
+    }
 }
 fn job_lua(node: Option<&Node>) -> Result<Option<JobLua>> {
     let Some(raw) = node else {
@@ -909,12 +959,12 @@ pub(crate) fn load_with_paths_and_exit_codes(
         || m.keys().any(|k| {
             !matches!(
                 k.as_str(),
-                "exit_codes" | "lua" | "input" | "process" | "output"
+                "exit_codes" | "params" | "lua" | "input" | "process" | "output"
             )
         })
     {
         return Err(Error::config(
-            "job requires input and output; exit_codes, lua and process are optional and other keys are forbidden",
+            "job requires input and output; exit_codes, params, lua and process are optional and other keys are forbidden",
         )
         .context(&root.origin));
     }
@@ -923,6 +973,20 @@ pub(crate) fn load_with_paths_and_exit_codes(
         unreachable!("job root was validated");
     };
     let lua = job_lua(m.get("lua"))?;
+    let mut params: BTreeMap<String, Param> = m
+        .get("params")
+        .map(Node::decode)
+        .transpose()?
+        .unwrap_or_default();
+    for (name, param) in &mut params {
+        let raw = m["params"].get(name).unwrap();
+        param.origin = Some(raw.get("default").unwrap_or(raw).origin.clone());
+        if !crate::params::identifier(name) {
+            return Err(
+                Error::config(format!("invalid parameter name '{name}'")).context(&raw.origin)
+            );
+        }
+    }
     let lua_runtime = crate::lua::Runtime::new(lua.as_ref());
     let mut input = datasets(&m["input"], false)?;
     let mut output = datasets(&m["output"], true)?;
@@ -945,6 +1009,8 @@ pub(crate) fn load_with_paths_and_exit_codes(
     {
         for (p, n) in process.iter_mut().zip(nodes) {
             p.origin = n.get("sql").map(|n| n.origin.clone());
+            check_origins(&mut p.before, n.get("before"));
+            check_origins(&mut p.after, n.get("after"));
         }
     }
     if input.is_empty() || output.is_empty() {
@@ -970,6 +1036,8 @@ pub(crate) fn load_with_paths_and_exit_codes(
     }
     Ok(Job {
         exit_codes: exit_codes.clone(),
+        params,
+        params_bound: false,
         lua,
         lua_runtime,
         input,

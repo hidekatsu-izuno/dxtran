@@ -53,7 +53,6 @@ async fn stage_output(
 ) -> Result<PathBuf> {
     let start = Instant::now();
     let file = directory.join(format!("{}.tmp", d.id));
-    let mut sink = sink::OutputSink::create(d, &p.layout, &file, &p.schema)?;
     let physical = ctx
         .execute_logical_plan(p.plan.clone())
         .await?
@@ -63,6 +62,16 @@ async fn stage_output(
     let physical = cooperative::wrap(physical).map_err(original_error)?;
     let mut stream = datafusion::physical_plan::execute_stream(physical.clone(), ctx.task_ctx())
         .map_err(original_error)?;
+    if !p.before.is_empty() {
+        let snapshot =
+            crate::snapshot::SnapshotTable::new(p.schema.clone(), false, budget.clone())?;
+        snapshot
+            .save(stream, &directory.join(format!("{}.before.arrow", d.id)))
+            .await?;
+        p.before.run(ctx, &snapshot).await?;
+        stream = snapshot.stream(ctx).await?;
+    }
+    let mut sink = sink::OutputSink::create(d, &p.layout, &file, &p.schema)?;
     let workers = crate::parallel::workers(resources.threads, resources.memory_limit);
     if let Some(encoder) = sink.fixed_encoder().filter(|_| workers > 1) {
         sink = fixed::write(sink, stream, encoder, budget.clone(), workers)
