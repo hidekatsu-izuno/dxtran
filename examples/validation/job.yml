@@ -1,7 +1,8 @@
 params:
-  region: {default: "'east'"}
-  business_date: {default: "DATE '2026-11-06'"}
-  expected_count: {default: 3}
+  region: {type: string, default: "'east'"}
+  business_date: {type: date, default: "DATE '2026-11-06'"}
+  expected_count: {type: decimal, default: 3}
+  enabled: {type: boolean, default: true}
 
 input:
   - id: sales
@@ -19,7 +20,7 @@ input:
 
 process:
   - id: selected
-    sql: SELECT customer_id, amount FROM sales WHERE region = $region
+    sql: SELECT customer_id, amount FROM sales WHERE $enabled AND region = $region
     before:
       from: sales
       when: COUNT(*) = 0
@@ -36,7 +37,7 @@ output:
     path: out/records.csv
     encoding: utf-8
     mode: overwrite
-    sql: SELECT customer_id, amount, CAST($business_date AS DATE) AS business_date FROM selected
+    sql: SELECT customer_id, amount, $business_date AS business_date FROM selected
     before:
       when: SUM(amount) <= 0
       level: error

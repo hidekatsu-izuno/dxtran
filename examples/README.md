@@ -147,7 +147,7 @@ target/debug/dxt run examples/checks/output_abend.yml
 
 ## 集計チェック・業務パラメーター・CSV列名マッピング
 
-[validation/job.yml](validation/job.yml) は日本語CSVヘッダーを `source_name` でSQL列名へ対応付け、4つのタイミングで件数・合計を検査します。`params` の `default` はSQL式で、CLIからは文字列として上書きできます。
+[validation/job.yml](validation/job.yml) は日本語CSVヘッダーを `source_name` でSQL列名へ対応付け、4つのタイミングで件数・合計を検査します。`params` の `type` で文字列・数値・日時・真偽値を宣言できます。CLIのテキスト値、またはSQL式の `default` を宣言した型へ変換してからSQLに渡します。`boolean` のCLI値は `true` / `false`（大文字・小文字を区別しない）です。
 
 ```sh
 mkdir -p examples/validation/out
@@ -157,7 +157,7 @@ cmp examples/validation/expected/records.csv examples/validation/out/records.csv
 target/debug/dxt run examples/validation/job.yml -p region=west -p business_date=2026-11-07
 ```
 
-必須にするパラメーターは `region: {}` のように `default` を省略します。宣言がない名前、重複指定、必須値の未指定は `check` / `explain` / `run` でエラーになります。
+必須にするパラメーターは `region: {type: string}` のように `default` を省略します。宣言がない名前、重複指定、必須値の未指定、型変換できない値は `check` / `explain` / `run` でエラーになります。日時パラメーターは `date` / `time` / `timestamp`、小数は `type: decimal` だけを指定し、精度と小数桁は値から自動で決まります。
 
 ## 全サンプルを検証する
 

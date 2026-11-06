@@ -1,6 +1,6 @@
 # dxtran 設計仕様書
 
-状態: 初期設計案 / 仕様版: 0.22 / 作成日: 2026-10-22 / 更新日: 2026-11-06
+状態: 初期設計案 / 仕様版: 0.23 / 作成日: 2026-10-22 / 更新日: 2026-11-07
 
 ## 1. 目的と設計上の前提
 
@@ -79,24 +79,39 @@ output: []
 
 ### 4.1 業務パラメーター
 
-ジョブ直下の `params` に、受け渡せるパラメーターをマップで事前定義する。名前は `[A-Za-z_][A-Za-z0-9_]*` とし、大文字・小文字を区別する。宣言ごとの設定は任意の `default` だけとする。`import` で宣言を共有・上書きできる。
+ジョブ直下の `params` に、受け渡せるパラメーターをマップで事前定義する。名前は `[A-Za-z_][A-Za-z0-9_]*` とし、大文字・小文字を区別する。宣言ごとに任意の `type`・`default` を指定できる。`import` で宣言を共有・上書きできる。
 
 ```yaml
 params:
-  branch: {}                        # 必須
+  branch: {type: string}              # 必須
   business_date:
-    default: CURRENT_DATE           # SQL式を1回評価
+    type: date
+    default: CURRENT_DATE             # SQL式を1回評価
   minimum_amount:
+    type: decimal
     default: "100 * 2"
-  status:
-    default: "'A'"                  # SQL文字列リテラル
+  cutoff_time: {type: time, default: "TIME '18:00:00'"}
+  started_at: {type: timestamp, default: CURRENT_TIMESTAMP}
+  enabled: {type: boolean, default: true}
+  status: {type: string, default: "'A'"} # SQL文字列リテラル
 ```
 
-`--param branch=tokyo` または `-p branch=tokyo` を繰り返して渡す。CLIの値は常に文字列とし、最初の `=` だけで名前と値を分割する。空文字も指定できる。`default` がなくCLIでも渡されなかった宣言、未宣言名、同じ名前の重複、`NAME=VALUE` 以外の指定は設定エラーとする。未使用の必須宣言も省略できない。この検証は `check`・`explain`・`run` に共通である。
+`--param branch=tokyo` または `-p branch=tokyo` を繰り返して渡す。CLIの値はSQL式として評価せずテキストとして受け取り、最初の `=` だけで名前と値を分割する。`type` があれば計画前に宣言型へ変換する。空文字は文字列型に指定できる。`default` がなくCLIでも渡されなかった宣言、未宣言名、同じ名前の重複、`NAME=VALUE` 以外の指定は設定エラーとする。未使用の必須宣言も省略できない。この検証は `check`・`explain`・`run` に共通である。
 
-`default` はSQLのスカラー式とし、選択された既定値を計画前に1回評価し、SQLの型を維持して共有する。数値・真偽値はYAMLの数値・真偽値でも指定できる。文字列はSQLリテラルとして引用する。SQLの `NULL` は `"NULL"` と書く。列・テーブル・集約・ウィンドウ・サブクエリ・他のパラメーターへの参照は使用できない。上書きされた既定値も構文・参照・型を検証する。
+| `type` | SQLへ渡す型・CLI値の例 |
+| --- | --- |
+| `string` | 文字列（Utf8）。例 `-p branch=tokyo` |
+| `decimal` | Decimal128。例 `-p minimum_amount=123.45` は Decimal128(5, 2)。精度と小数桁は定数から推定し、`precision` / `scale` は設定しない。末尾の小数0も保持する |
+| `date` | Date32。例 `-p business_date=2026-11-07` |
+| `time` | Time64(us)。例 `-p cutoff_time=18:00:00.123456` |
+| `timestamp` | Timestamp(us, UTC)。例 `-p started_at=2026-11-07T18:00:00+09:00`。オフセットはUTCへ換算し、省略時はUTCとして解釈する |
+| `boolean` | Boolean。CLI値は `true` / `false`（大文字・小文字を区別しない） |
 
-`process.sql`、`output.sql`、レコード条件の `when`、各チェックの `when` から `$branch` の形式で参照する。名前やファイルパス等の置換は行わない。値はSQLの構文木でリテラルとして渡すため、引用符・改行・`=` 等を含むCLI値も文字列のまま扱う。CLI値を日付・数値として利用する場合は必要に応じて `CAST($business_date AS DATE)` 等で変換する。展開後ハッシュには実際のパラメーター値も反映する。
+型を省略した場合は従来どおりCLI値を文字列として扱い、既定値にはSQL式の結果型を使う。パラメーター宣言に `precision` / `scale` は指定できない。日時はマイクロ秒精度で、型変換はSQLのCASTと同じ規則を使う。Decimalは数値定数として解析し、浮動小数点を経由せず、値の係数と小数桁から必要な精度を決める。Decimal既定値のSQL数値リテラルも10進数として評価する。最大精度38桁、scaleは-38〜38とし、表現範囲外はエラーとする。指数表記も使用できる。NULLだけの場合は Decimal128(1, 0) とする。未使用のパラメーターも型と値を検証し、変換に失敗したらパラメーター名・宣言元の位置を付けた設定エラー（終了コード2）とする。
+
+`default` はSQLのスカラー式とし、選択された既定値を計画前に1回評価する。`type` があればその型に変換し、省略時はSQLの結果型を維持して共有する。SQLのNULLは宣言型のNULLとして扱う。数値・真偽値はYAMLの数値・真偽値でも指定できる。文字列はSQLリテラルとして引用する。SQLの `NULL` は `"NULL"` と書く。列・テーブル・集約・ウィンドウ・サブクエリ・他のパラメーターへの参照は使用できない。上書きされた既定値も構文・参照・型を検証する。
+
+`process.sql`、`output.sql`、レコード条件の `when`、各チェックの `when` から `$branch` の形式で参照する。名前やファイルパス等の置換は行わない。値はSQLの構文木でリテラルとして渡すため、引用符・改行・`=` 等も値の一部として扱う。`type` を指定すればSQL内の `CAST` は不要で、日付・数値・真偽値として直接利用できる。展開後ハッシュには実際のパラメーター値も反映する。
 
 ## 5. 設定の全体例
 

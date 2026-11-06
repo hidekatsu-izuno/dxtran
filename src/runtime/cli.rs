@@ -15,7 +15,7 @@ pub struct Cli {
         short = 'p',
         global = true,
         value_name = "NAME=VALUE",
-        help = "Set a declared business parameter to a string value (repeatable)"
+        help = "Set a business parameter from text, converting to its declared type (repeatable)"
     )]
     pub(super) params: Vec<String>,
     #[arg(

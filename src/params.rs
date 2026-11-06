@@ -1,15 +1,16 @@
 //! Resolve business parameters once and bind typed literals through the SQL AST.
 use crate::{
-    config::{Check, Job},
+    config::{Check, Job, Param, ParamType},
     error::{Error, Result},
 };
 use datafusion::{
-    common::{ScalarValue, tree_node::TreeNodeRecursion},
-    logical_expr::{LogicalPlan, lit},
-    prelude::SessionContext,
+    arrow::datatypes::{DataType, TimeUnit},
+    common::{DFSchema, ScalarValue, tree_node::TreeNodeRecursion},
+    logical_expr::{Expr as LogicalExpr, LogicalPlan, lit},
+    prelude::{SessionConfig, SessionContext},
     sql::{
         sqlparser::{
-            ast::{Expr, Query, Value, Visit, VisitMut, Visitor, VisitorMut},
+            ast::{Expr, Query, UnaryOperator, Value, Visit, VisitMut, Visitor, VisitorMut},
             dialect::GenericDialect,
             parser::Parser,
             tokenizer::Token,
@@ -19,6 +20,96 @@ use datafusion::{
 };
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, ops::ControlFlow};
+
+impl Param {
+    fn convert(&self, value: ScalarValue, context: &SessionContext) -> Result<ScalarValue> {
+        let Some(kind) = self.kind else {
+            return Ok(value);
+        };
+        if kind == ParamType::Decimal {
+            if value.is_null() {
+                return Ok(ScalarValue::Decimal128(None, 1, 0));
+            }
+            if let ScalarValue::Decimal128(Some(coefficient), _, scale) = &value {
+                return decimal_value(*coefficient, *scale);
+            }
+            let text = if let Some(Some(text)) = value.try_as_str() {
+                text.to_owned()
+            } else if value.data_type().is_numeric() {
+                value.to_string()
+            } else {
+                return Err(Error::config(
+                    "parameter value cannot be converted to decimal",
+                ));
+            };
+            return decimal(&text, context);
+        }
+        let data_type = match kind {
+            ParamType::String => DataType::Utf8,
+            ParamType::Boolean => DataType::Boolean,
+            ParamType::Date => DataType::Date32,
+            ParamType::Time => DataType::Time64(TimeUnit::Microsecond),
+            ParamType::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            ParamType::Decimal => unreachable!(),
+        };
+        let invalid = || {
+            Error::config(format!(
+                "parameter value cannot be converted to {data_type}"
+            ))
+        };
+        if value.is_null() {
+            return ScalarValue::try_new_null(&data_type).map_err(|_| invalid());
+        }
+        if kind == ParamType::Boolean
+            && let Some(Some(text)) = value.try_as_str()
+        {
+            return match text {
+                text if text.eq_ignore_ascii_case("true") => Ok(ScalarValue::Boolean(Some(true))),
+                text if text.eq_ignore_ascii_case("false") => Ok(ScalarValue::Boolean(Some(false))),
+                _ => Err(invalid()),
+            };
+        }
+        value.cast_to(&data_type).map_err(|_| invalid())
+    }
+}
+
+fn decimal(text: &str, context: &SessionContext) -> Result<ScalarValue> {
+    let invalid = || Error::config("invalid decimal parameter or precision exceeds 38 digits");
+    // Accept only one numeric constant; CLI text never becomes an SQL expression.
+    let number = expression(text).map_err(|_| invalid())?;
+    let numeric =
+        |expr: &Expr| matches!(expr, Expr::Value(v) if matches!(v.value, Value::Number(_, _)));
+    if !numeric(&number)
+        && !matches!(&number,
+        Expr::UnaryOp { op: UnaryOperator::Plus | UnaryOperator::Minus, expr } if numeric(expr))
+    {
+        return Err(invalid());
+    }
+    let logical = context
+        .parse_sql_expr(&number.to_string(), &DFSchema::empty())
+        .map_err(|_| invalid())?;
+    let (coefficient, scale) = match logical {
+        LogicalExpr::Literal(ScalarValue::Decimal128(Some(value), _, scale), _) => (value, scale),
+        LogicalExpr::Literal(ScalarValue::Int64(Some(value)), _) => (i128::from(value), 0),
+        LogicalExpr::Literal(ScalarValue::UInt64(Some(value)), _) => (i128::from(value), 0),
+        _ => return Err(invalid()),
+    };
+    decimal_value(coefficient, scale)
+}
+
+fn decimal_value(coefficient: i128, scale: i8) -> Result<ScalarValue> {
+    let digits = (coefficient.unsigned_abs().max(1).ilog10() + 1) as u8;
+    if digits > 38 || !(-38..=38).contains(&scale) {
+        return Err(Error::config(
+            "decimal parameter exceeds the supported precision or scale",
+        ));
+    }
+    Ok(ScalarValue::Decimal128(
+        Some(coefficient),
+        digits.max(scale.max(0) as u8),
+        scale,
+    ))
+}
 
 pub(crate) fn identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
@@ -144,12 +235,30 @@ pub(crate) async fn bind(job: &mut Job, overrides: &[String]) -> Result<()> {
             );
         }
     }
-    let ctx = (!job.params.is_empty()).then(SessionContext::new);
-    if let Some(ctx) = &ctx {
-        crate::functions::register(ctx);
+    let ctx = job
+        .params
+        .values()
+        .any(|p| p.kind != Some(ParamType::Decimal))
+        .then(SessionContext::new);
+    let decimal_ctx = job
+        .params
+        .values()
+        .any(|p| p.kind == Some(ParamType::Decimal))
+        .then(|| {
+            let mut config = SessionConfig::new();
+            config.options_mut().sql_parser.parse_float_as_decimal = true;
+            SessionContext::new_with_config(config)
+        });
+    for context in ctx.iter().chain(&decimal_ctx) {
+        crate::functions::register(context);
     }
     let mut values = BTreeMap::new();
     for (name, param) in &job.params {
+        let context = if param.kind == Some(ParamType::Decimal) {
+            decimal_ctx.as_ref().unwrap()
+        } else {
+            ctx.as_ref().unwrap()
+        };
         let resolved = async {
             // Validate defaults even when overridden, but evaluate only the chosen value.
             let default = if let Some(sql) = &param.default {
@@ -157,9 +266,7 @@ pub(crate) async fn bind(job: &mut Job, overrides: &[String]) -> Result<()> {
                 if let ControlFlow::Break(message) = expr.visit(&mut DefaultExpression) {
                     return Err(Error::config(message));
                 }
-                let frame = ctx
-                    .as_ref()
-                    .unwrap()
+                let frame = context
                     .sql(&format!("SELECT ({expr}) AS value"))
                     .await
                     .map_err(|e| Error::config(e.to_string()))?;
@@ -201,9 +308,17 @@ pub(crate) async fn bind(job: &mut Job, overrides: &[String]) -> Result<()> {
             };
             // Preserve numeric widths, decimal scale and typed NULLs across SQL parsing.
             // Numeric text also represents NaN/Infinity without becoming identifiers.
+            let value = param.convert(value, context)?;
             let data_type = value.data_type();
             let literal = if data_type.is_numeric() && !value.is_null() {
-                lit(value.to_string())
+                let text = lit(value.to_string());
+                if matches!(data_type, DataType::Decimal128(_, scale) if scale < 0) {
+                    // Arrow cannot cast strings directly to negative-scale decimals.
+                    // The intermediate type covers 38 coefficient + 38 implicit digits.
+                    datafusion::functions::core::expr_fn::arrow_cast(text, lit("Decimal256(76, 0)"))
+                } else {
+                    text
+                }
             } else {
                 lit(value)
             };

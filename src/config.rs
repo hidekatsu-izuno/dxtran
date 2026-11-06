@@ -34,6 +34,7 @@ enum Kind {
 struct Node {
     kind: Kind,
     origin: Origin,
+    number_text: Option<String>,
 }
 impl Node {
     fn value(&self) -> Value {
@@ -68,6 +69,7 @@ fn parse_node(events: &[(Event, Marker)], index: &mut usize, file: &Path) -> Res
     *index += 1;
     let forbidden =
         || Error::config("YAML tags, anchors and aliases are forbidden").context(&origin);
+    let mut number_text = None;
     let kind = match event {
         Event::Scalar(s, style, anchor, tag) => {
             if *anchor != 0 || tag.is_some() {
@@ -81,6 +83,7 @@ fn parse_node(events: &[(Event, Marker)], index: &mut usize, file: &Path) -> Res
                     Yaml::Boolean(v) => Value::Bool(v),
                     Yaml::Integer(v) => Value::from(v),
                     Yaml::Real(v) => {
+                        number_text = Some(v.clone());
                         let n = v
                             .parse::<f64>()
                             .ok()
@@ -128,7 +131,11 @@ fn parse_node(events: &[(Event, Marker)], index: &mut usize, file: &Path) -> Res
         }
         _ => return Err(forbidden()),
     };
-    Ok(Node { kind, origin })
+    Ok(Node {
+        kind,
+        origin,
+        number_text,
+    })
 }
 
 fn parse(text: &str, file: &Path) -> Result<Node> {
@@ -605,10 +612,23 @@ pub struct Job {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Param {
+    #[serde(rename = "type")]
+    pub kind: Option<ParamType>,
     #[serde(default, deserialize_with = "sql_default")]
     pub default: Option<String>,
     #[serde(skip)]
     pub origin: Option<Origin>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ParamType {
+    String,
+    Decimal,
+    Date,
+    Time,
+    Timestamp,
+    Boolean,
 }
 
 fn sql_default<'de, D: serde::Deserializer<'de>>(
@@ -666,7 +686,7 @@ impl ExitCodes {
     }
 }
 impl Job {
-    /// Bind declared business parameters. CLI values are strings; defaults are SQL expressions.
+    /// Bind business parameters, converting CLI text or SQL defaults to any declared type.
     pub async fn with_params(mut self, values: &[String]) -> Result<Self> {
         crate::params::bind(&mut self, values).await?;
         Ok(self)
@@ -737,6 +757,7 @@ impl PathOverrides {
                     "path".into(),
                     Node {
                         kind: Kind::Scalar(value),
+                        number_text: None,
                         origin: Origin {
                             file: "<command line>".into(),
                             line: 1,
@@ -980,7 +1001,14 @@ pub(crate) fn load_with_paths_and_exit_codes(
         .unwrap_or_default();
     for (name, param) in &mut params {
         let raw = m["params"].get(name).unwrap();
-        param.origin = Some(raw.get("default").unwrap_or(raw).origin.clone());
+        param.origin = Some(raw.origin.clone());
+        if let Some(text) = raw
+            .get("default")
+            .and_then(|node| node.number_text.as_ref())
+        {
+            // SQL defaults retain their decimal digits instead of a YAML f64 roundtrip.
+            param.default = Some(text.clone());
+        }
         if !crate::params::identifier(name) {
             return Err(
                 Error::config(format!("invalid parameter name '{name}'")).context(&raw.origin)

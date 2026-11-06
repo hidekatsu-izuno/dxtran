@@ -11,12 +11,16 @@ cargo run -- run examples/basic/job.yml --threads 4 --memory-limit 512MiB
 
 サンプルの結果は `examples/basic/totals.csv` に出力されます。相対パスは、その値を記述した YAML ファイルがあるディレクトリから解決します。既存出力を置き換えるには出力定義に `mode: overwrite` を指定します。
 
-業務パラメーターはジョブ直下の `params` に宣言し、`--param X=Y` / `-p X=Y` で渡します。CLI値は文字列、`default` はSQL式です。`default` がない宣言は必須で、未宣言名・重複指定もエラーになります。SQLや各 `when` から `$X` で参照できます。[詳細](docs/SPEC.md#41-業務パラメーター)を参照してください。
+業務パラメーターはジョブ直下の `params` に宣言し、`--param X=Y` / `-p X=Y` で渡します。`type` に `string`・`decimal`・`date`・`time`・`timestamp`・`boolean` を指定できます。CLI値はテキストとして渡し、SQL式の `default` またはCLI値を宣言型へ変換します。変換できない値は計画前に設定エラーになります。`decimal` の精度・小数桁は定数の値から自動で決まり、`precision` / `scale` は指定しません。型を省略した場合は従来どおり、CLI値は文字列、既定値はSQL式の型を使います。`default` がない宣言は必須で、未宣言名・重複指定もエラーになります。SQLや各 `when` から `$X` で参照できます。[詳細](docs/SPEC.md#41-業務パラメーター)を参照してください。
 
 ```yaml
 params:
-  branch: {}
-  business_date: {default: CURRENT_DATE}
+  branch: {type: string}
+  business_date: {type: date, default: CURRENT_DATE}
+  minimum_amount: {type: decimal, default: 0}
+  cutoff_time: {type: time, default: "TIME '18:00:00'"}
+  started_at: {type: timestamp, default: CURRENT_TIMESTAMP}
+  enabled: {type: boolean, default: true}
 ```
 
 ```sh
