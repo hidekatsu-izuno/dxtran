@@ -11,7 +11,7 @@ cargo run -- run examples/basic/job.yml --threads 4 --memory-limit 512MiB
 
 サンプルの結果は `examples/basic/totals.csv` に出力されます。相対パスは、その値を記述した YAML ファイルがあるディレクトリから解決します。既存出力を置き換えるには出力定義に `mode: overwrite` を指定します。
 
-業務パラメーターはジョブ直下の `params` に宣言し、`--param X=Y` / `-p X=Y` で渡します。`type` に `string`・`decimal`・`date`・`time`・`timestamp`・`boolean` を指定できます。CLI値はテキストとして渡し、SQL式の `default` またはCLI値を宣言型へ変換します。変換できない値は計画前に設定エラーになります。`decimal` の精度・小数桁は定数の値から自動で決まり、`precision` / `scale` は指定しません。型を省略した場合は従来どおり、CLI値は文字列、既定値はSQL式の型を使います。`default` がない宣言は必須で、未宣言名・重複指定もエラーになります。SQLや各 `when` から `$X` で参照できます。[詳細](docs/SPEC.md#41-業務パラメーター)を参照してください。
+業務パラメーターはジョブ直下の `params` に宣言し、`--param X=Y` / `-p X=Y` で渡します。`type` に `string`・`decimal`・`date`・`time`・`timestamp`・`boolean` を指定できます。CLI値はテキストとして渡し、SQL式の `default` またはCLI値を宣言型へ変換します。変換できない値は計画前に設定エラーになります。`decimal` の精度・小数桁は定数の値から自動で決まり、`precision` / `scale` は指定しません。型を省略した場合は従来どおり、CLI値は文字列、既定値はSQL式の型を使います。`default` がない宣言は必須で、未宣言名・重複指定もエラーになります。SQLや各 `when` から `${X}` をバインド変数として参照できます。[詳細](docs/SPEC.md#41-業務パラメーター)を参照してください。
 
 ```yaml
 params:
@@ -26,6 +26,29 @@ params:
 ```sh
 dxt run job.yml -p branch=tokyo --param business_date=2026-11-06
 ```
+
+SQLでは引用符の外に `${名前}` を書きます。文字列・日付・数値等の値を型付きでバインドするため、文字列パラメーターも引用符で囲む必要はありません。SQLの文字列リテラル・引用符付き識別子・コメント内の `${名前}` はそのまま保持します。
+
+```yaml
+sql: |
+  SELECT * FROM sales
+  WHERE region = ${branch} AND business_date = ${business_date}
+```
+
+入出力の `path` では `${名前}` でパラメーターを展開できます。日付は `2026-11-07` の形式になり、CLIから渡した値も利用できます。YAMLの相対パスは記述元のYAML、CLIで上書きした相対パスは実行ディレクトリを基準に、展開後に解決します。
+
+```yaml
+input:
+  - id: sales
+    path: "data/sales_${business_date}.csv"
+    # format・encoding・fieldsも通常どおり指定
+output:
+  - id: result
+    path: "out/${branch}_${business_date}.csv"
+    # format・encoding・sqlも通常どおり指定
+```
+
+`${名前}` の未宣言名・NULL・不正な構文は設定エラーです。文字列として `${名前}` をファイル名に含める場合は `\${名前}` と記述します。YAMLでは `path: 'out/\${名前}.csv'` のように単一引用符を使うと、そのまま書けます。CLIにテンプレートを渡す場合は `'--output.result.path=out_${business_date}.csv'` のように引用して、シェルによる展開を防ぎます。[パス展開の規則](docs/SPEC.md#42-ファイルパスへのパラメーター展開)を参照してください。
 
 CSVの外部ヘッダー名がSQL列名と異なる場合は、`input.fields` に `{name: customer_id, source_name: 顧客コード}` と指定します。SQLでは `customer_id` を参照し、省略時は従来どおり `name` と照合します。`source_name` はヘッダー付きCSV入力専用で、列順・列数も一致させます。
 

@@ -252,7 +252,8 @@ def manifest():
         return {"file": file, "outputs": {"out/" + name: "expected/" + name for name in outputs}}
 
     cases = [
-        ("validation", [job("job.yml", "records.csv")]),
+        ("validation", [{"file": "job.yml", "outputs": {
+            "out/records_2026-11-06.csv": "expected/records.csv"}}]),
         ("exit_codes", [job("job.yml", "records.csv"),
             {"file": "input_error.yml", "exit_code": 12, "scan_exit_code": 12,
              "diagnostic": "入力金額が負のため終了コード12で終了します。", "absent": ["out/input_error.csv"]},

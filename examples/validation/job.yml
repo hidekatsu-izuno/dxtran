@@ -3,24 +3,25 @@ params:
   business_date: {type: date, default: "DATE '2026-11-06'"}
   expected_count: {type: decimal, default: 3}
   enabled: {type: boolean, default: true}
+  source_file: {type: string, default: "'sales'"}
 
 input:
   - id: sales
     format: csv
-    path: data/sales.csv
+    path: "data/${source_file}.csv"
     encoding: utf-8
     fields:
       - {name: customer_id, source_name: 顧客コード}
       - {name: amount, source_name: 売上金額, type: decimal, precision: 8}
       - {name: region, source_name: 地域}
     after:
-      when: COUNT(*) <> $expected_count OR SUM(amount) <> 60
+      when: COUNT(*) <> ${expected_count} OR SUM(amount) <> 60
       level: error
       message: 入力の件数または合計が想定と異なります。
 
 process:
   - id: selected
-    sql: SELECT customer_id, amount FROM sales WHERE $enabled AND region = $region
+    sql: SELECT customer_id, amount FROM sales WHERE ${enabled} AND region = ${region}
     before:
       from: sales
       when: COUNT(*) = 0
@@ -34,10 +35,10 @@ process:
 output:
   - id: result
     format: csv
-    path: out/records.csv
+    path: "out/records_${business_date}.csv"
     encoding: utf-8
     mode: overwrite
-    sql: SELECT customer_id, amount, $business_date AS business_date FROM selected
+    sql: SELECT customer_id, amount, ${business_date} AS business_date FROM selected
     before:
       when: SUM(amount) <= 0
       level: error

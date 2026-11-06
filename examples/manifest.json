@@ -5,7 +5,7 @@
       {
         "file": "job.yml",
         "outputs": {
-          "out/records.csv": "expected/records.csv"
+          "out/records_2026-11-06.csv": "expected/records.csv"
         }
       }
     ]

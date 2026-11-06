@@ -1,4 +1,6 @@
 //! Resolve business parameters once and bind typed literals through the SQL AST.
+mod paths;
+mod sql;
 use crate::{
     config::{Check, Job, Param, ParamType},
     error::{Error, Result},
@@ -9,16 +11,12 @@ use datafusion::{
     logical_expr::{Expr as LogicalExpr, LogicalPlan, lit},
     prelude::{SessionConfig, SessionContext},
     sql::{
-        sqlparser::{
-            ast::{Expr, Query, UnaryOperator, Value, Visit, VisitMut, Visitor, VisitorMut},
-            dialect::GenericDialect,
-            parser::Parser,
-            tokenizer::Token,
-        },
+        sqlparser::ast::{Expr, Query, UnaryOperator, Value, Visit, VisitMut, Visitor, VisitorMut},
         unparser::expr_to_sql,
     },
 };
 use sha2::{Digest, Sha256};
+use sql::expression;
 use std::{collections::BTreeMap, ops::ControlFlow};
 
 impl Param {
@@ -119,20 +117,6 @@ pub(crate) fn identifier(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-fn expression(sql: &str) -> Result<Expr> {
-    let dialect = GenericDialect {};
-    let mut parser = Parser::new(&dialect)
-        .try_with_sql(sql)
-        .map_err(|e| Error::config(e.to_string()))?;
-    let expr = parser
-        .parse_expr()
-        .map_err(|e| Error::config(e.to_string()))?;
-    if parser.peek_token().token != Token::EOF {
-        return Err(Error::config("expected exactly one SQL expression"));
-    }
-    Ok(expr)
-}
-
 struct DefaultExpression;
 impl Visitor for DefaultExpression {
     type Break = &'static str;
@@ -147,17 +131,26 @@ impl Visitor for DefaultExpression {
     }
 }
 
-struct Bind<'a>(&'a BTreeMap<String, Expr>);
+struct Resolved {
+    scalar: ScalarValue,
+    literal: Expr,
+}
+
+struct Bind<'a>(&'a BTreeMap<String, Resolved>);
 impl VisitorMut for Bind<'_> {
     type Break = Error;
     fn post_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Error> {
         if let Expr::Value(v) = expr
             && let Value::Placeholder(name) = &v.value
         {
-            let Some(value) = name.strip_prefix('$').and_then(|name| self.0.get(name)) else {
+            let Some(value) = name
+                .strip_prefix("${")
+                .and_then(|name| name.strip_suffix('}'))
+                .and_then(|name| self.0.get(name))
+            else {
                 return ControlFlow::Break(Error::config(format!("undeclared parameter '{name}'")));
             };
-            *expr = Expr::Nested(Box::new(value.clone()));
+            *expr = Expr::Nested(Box::new(value.literal.clone()));
         }
         ControlFlow::Continue(())
     }
@@ -178,8 +171,7 @@ impl Bind<'_> {
         if !sql.contains('$') {
             return Ok(());
         }
-        let mut statements =
-            Parser::parse_sql(&GenericDialect {}, sql).map_err(|e| Error::sql(e.to_string()))?;
+        let mut statements = sql::query(sql)?;
         if let ControlFlow::Break(e) = VisitMut::visit(&mut statements, self) {
             return Err(e);
         }
@@ -320,12 +312,16 @@ pub(crate) async fn bind(job: &mut Job, overrides: &[String]) -> Result<()> {
                     text
                 }
             } else {
-                lit(value)
+                lit(value.clone())
             };
             expr_to_sql(&datafusion::functions::core::expr_fn::arrow_cast(
                 literal,
                 lit(data_type.to_string()),
             ))
+            .map(|literal| Resolved {
+                scalar: value,
+                literal,
+            })
             .map_err(|e| Error::config(e.to_string()))
         }
         .await
@@ -341,6 +337,7 @@ pub(crate) async fn bind(job: &mut Job, overrides: &[String]) -> Result<()> {
         })?;
         values.insert(name.clone(), resolved);
     }
+    let expanded_paths = paths::expand(job, &values)?;
     let mut binder = Bind(&values);
     for dataset in job.input.iter_mut().chain(&mut job.output) {
         if let Some(sql) = &mut dataset.sql {
@@ -360,11 +357,14 @@ pub(crate) async fn bind(job: &mut Job, overrides: &[String]) -> Result<()> {
         binder.checks(&mut process.before)?;
         binder.checks(&mut process.after)?;
     }
-    if !values.is_empty() {
+    if !values.is_empty() || !expanded_paths.is_empty() {
         let mut hash = Sha256::new();
         hash.update(job.expanded_hash.as_bytes());
         for (name, value) in &values {
-            hash.update(serde_json::to_vec(&(name, value.to_string())).unwrap());
+            hash.update(serde_json::to_vec(&(name, value.literal.to_string())).unwrap());
+        }
+        if !expanded_paths.is_empty() {
+            hash.update(serde_json::to_vec(&expanded_paths).unwrap());
         }
         job.expanded_hash = hex::encode(hash.finalize());
     }

@@ -36,23 +36,23 @@ fn cli_values_are_strings_and_defaults_are_typed_sql_values() {
     config["params"] = json!({"X":{},"day":{"default":"DATE '2026-11-06'"},
         "limit":{"default":"1 + 1"},"empty":{"default":"NULL"},"enabled":{"default":true}});
     config["input"][0]["after"] =
-        json!({"when":"COUNT(*) <> $limit", "level":"error","message":"count"});
-    config["process"] = json!([{"id":"p","sql":"SELECT * FROM data LIMIT $limit",
-        "before":{"when":"COUNT(*) <> $limit","level":"error","message":"before"},
-        "after":{"when":"COUNT(*) <> $limit","level":"error","message":"after"}}]);
+        json!({"when":"COUNT(*) <> ${limit}", "level":"error","message":"count"});
+    config["process"] = json!([{"id":"p","sql":"SELECT * FROM data LIMIT ${limit}",
+        "before":{"when":"COUNT(*) <> ${limit}","level":"error","message":"before"},
+        "after":{"when":"COUNT(*) <> ${limit}","level":"error","message":"after"}}]);
     config["output"][0]["sql"] = json!(
-        "SELECT value, $X AS supplied, $day AS day, CAST($empty AS VARCHAR) AS empty FROM p WHERE $enabled"
+        "SELECT value, ${X} AS supplied, ${day} AS day, CAST(${empty} AS VARCHAR) AS empty FROM p WHERE ${enabled}"
     );
     config["output"][0]["check"] =
-        json!({"when":"supplied <> $X","level":"error","message":"escaped"});
+        json!({"when":"supplied <> ${X}","level":"error","message":"escaped"});
     config["output"][0]["before"] =
-        json!({"when":"COUNT(*) <> $limit","level":"error","message":"output"});
-    let value = "X=O'Brien=$other; SELECT 'bad'";
+        json!({"when":"COUNT(*) <> ${limit}","level":"error","message":"output"});
+    let value = "X=O'Brien=${other}; SELECT 'bad'";
     let output = invoke(dir.path(), &config, "run", &["--param", value]);
     success(&output);
     assert_eq!(
         fs::read_to_string(dir.path().join("out.csv")).unwrap(),
-        "value,supplied,day,empty\na,O'Brien=$other; SELECT 'bad',2026-11-06,\nb,O'Brien=$other; SELECT 'bad',2026-11-06,\n"
+        "value,supplied,day,empty\na,O'Brien=${other}; SELECT 'bad',2026-11-06,\nb,O'Brien=${other}; SELECT 'bad',2026-11-06,\n"
     );
     let output = invoke(
         dir.path(),
@@ -105,7 +105,7 @@ fn missing_undeclared_duplicate_and_malformed_parameters_fail_before_writing() {
         }
     }
     config["params"] = json!({});
-    config["output"][0]["sql"] = json!("SELECT $missing AS value FROM data");
+    config["output"][0]["sql"] = json!("SELECT ${missing} AS value FROM data");
     assert_eq!(
         invoke(dir.path(), &config, "check", &[]).status.code(),
         Some(2)
@@ -122,7 +122,7 @@ fn defaults_must_be_scalar_expressions_and_are_evaluated_once() {
         "(SELECT 1)",
         "SUM(1)",
         "ROW_NUMBER() OVER ()",
-        "$other",
+        "${other}",
         "value",
         "CAST('bad' AS INT)",
     ] {
@@ -138,7 +138,7 @@ fn defaults_must_be_scalar_expressions_and_are_evaluated_once() {
     }
     config["params"] = json!({"clock":{"default":"CURRENT_TIMESTAMP"},"number":{"default":42}});
     config["output"][0]["sql"] =
-        json!("SELECT $clock AS first, $clock AS second, $number AS n FROM data");
+        json!("SELECT ${clock} AS first, ${clock} AS second, ${number} AS n FROM data");
     success(&invoke(dir.path(), &config, "run", &[]));
     let output = fs::read_to_string(dir.path().join("out.csv")).unwrap();
     let lines: Vec<_> = output.lines().skip(1).collect();
@@ -151,7 +151,7 @@ fn defaults_must_be_scalar_expressions_and_are_evaluated_once() {
     config["params"] = json!({"amount":{"default":"CAST(1 AS DECIMAL(12,2))"},
         "missing":{"default":"CAST(NULL AS INT)"},"nan":{"default":"CAST('NaN' AS DOUBLE)"}});
     config["output"][0]["sql"] = json!(
-        "SELECT $amount AS amount, arrow_typeof($amount) AS amount_type, arrow_typeof($missing) AS missing_type, arrow_typeof($nan) AS nan_type FROM data"
+        "SELECT ${amount} AS amount, arrow_typeof(${amount}) AS amount_type, arrow_typeof(${missing}) AS missing_type, arrow_typeof(${nan}) AS nan_type FROM data"
     );
     success(&invoke(dir.path(), &config, "run", &[]));
     let output = fs::read_to_string(dir.path().join("out.csv")).unwrap();
@@ -172,7 +172,7 @@ fn imported_declarations_and_library_planning_resolve_defaults() {
     .unwrap();
     let mut config = job();
     config["params"] = json!({"import":"params.yml"});
-    config["output"][0]["sql"] = json!("SELECT $X AS value FROM data");
+    config["output"][0]["sql"] = json!("SELECT ${X} AS value FROM data");
     let output = invoke(dir.path(), &config, "check", &[]);
     assert!(String::from_utf8_lossy(&output.stderr).contains("params.yml:1:"));
     success(&invoke(dir.path(), &config, "run", &["--param=X=value"]));
@@ -200,12 +200,12 @@ fn parameters_are_available_in_input_and_output_record_conditions() {
     let fields = json!([
         {"name":"kind","length":1},
         {"name":"header","offset":1,"length":1,"when":"kind = 'H'"},
-        {"name":"detail","offset":1,"length":1,"when":"kind = $active"}
+        {"name":"detail","offset":1,"length":1,"when":"kind = ${active}"}
     ]);
     config["input"][0] = json!({"id":"data","format":"fixed","path":"in.dat","encoding":"utf-8",
         "fixed":{"record_separator":"none"},"fields":fields,
-        "check":{"when":"kind = $active AND detail IS NULL","level":"error","message":"missing"}});
-    config["output"][0]["sql"] = json!("SELECT detail FROM data WHERE kind = $active");
+        "check":{"when":"kind = ${active} AND detail IS NULL","level":"error","message":"missing"}});
+    config["output"][0]["sql"] = json!("SELECT detail FROM data WHERE kind = ${active}");
     let fixed = json!({"id":"fixed","format":"fixed","path":"out.dat","mode":"overwrite",
         "encoding":"utf-8","fixed":{"record_separator":"none"},"fields":fields,"sql":"SELECT * FROM data"});
     config["output"].as_array_mut().unwrap().push(fixed);
@@ -231,15 +231,14 @@ fn declared_types_convert_cli_strings_before_sql_and_checks() {
         "day":{"type":"date"},"clock":{"type":"time"},
         "stamp":{"type":"timestamp"},"enabled":{"type":"boolean"}
     });
-    config["input"][0]["check"] =
-        json!({"when":"NOT $enabled OR $amount <= 0", "level":"error","message":"parameter types"});
+    config["input"][0]["check"] = json!({"when":"NOT ${enabled} OR ${amount} <= 0", "level":"error","message":"parameter types"});
     config["input"][0]["after"] =
-        json!({"when":"$day <> DATE '2026-11-07'", "level":"error","message":"day"});
+        json!({"when":"${day} <> DATE '2026-11-07'", "level":"error","message":"day"});
     config["output"][0]["sql"] = json!(
-        "SELECT $label AS label, $amount AS amount, $day AS day, $clock AS clock, $stamp AS stamp, $enabled AS enabled FROM data WHERE $enabled AND $amount > 0"
+        "SELECT ${label} AS label, ${amount} AS amount, ${day} AS day, ${clock} AS clock, ${stamp} AS stamp, ${enabled} AS enabled FROM data WHERE ${enabled} AND ${amount} > 0"
     );
     config["output"][0]["before"] =
-        json!({"when":"MIN(amount) <> $amount", "level":"error","message":"precision"});
+        json!({"when":"MIN(amount) <> ${amount}", "level":"error","message":"precision"});
     let args = [
         "-p",
         "label=O'Brien=ok",
@@ -288,7 +287,7 @@ fn declared_types_convert_sql_defaults_and_keep_typed_nulls() {
         "enabled":{"type":"boolean","default":true}
     });
     config["output"][0]["sql"] = json!(
-        "SELECT $label AS label, $amount AS amount, $day AS day, $clock AS clock, $stamp AS stamp, $enabled AS enabled FROM data WHERE $enabled"
+        "SELECT ${label} AS label, ${amount} AS amount, ${day} AS day, ${clock} AS clock, ${stamp} AS stamp, ${enabled} AS enabled FROM data WHERE ${enabled}"
     );
     success(&invoke(dir.path(), &config, "run", &[]));
     assert_eq!(
@@ -300,7 +299,7 @@ fn declared_types_convert_sql_defaults_and_keep_typed_nulls() {
         param["default"] = json!("NULL");
     }
     config["output"][0]["sql"] = json!(
-        "SELECT $label AS label, $amount AS amount, $day AS day, $clock AS clock, $stamp AS stamp, $enabled AS enabled FROM data"
+        "SELECT ${label} AS label, ${amount} AS amount, ${day} AS day, ${clock} AS clock, ${stamp} AS stamp, ${enabled} AS enabled FROM data"
     );
     success(&invoke(dir.path(), &config, "run", &[]));
     assert_eq!(
@@ -308,7 +307,7 @@ fn declared_types_convert_sql_defaults_and_keep_typed_nulls() {
         "label,amount,day,clock,stamp,enabled\n,,,,,\n"
     );
     config["output"][0]["sql"] = json!(
-        "SELECT arrow_typeof($label) AS label, arrow_typeof($amount) AS amount, arrow_typeof($day) AS day, arrow_typeof($clock) AS clock, arrow_typeof($stamp) AS stamp, arrow_typeof($enabled) AS enabled FROM data"
+        "SELECT arrow_typeof(${label}) AS label, arrow_typeof(${amount}) AS amount, arrow_typeof(${day}) AS day, arrow_typeof(${clock}) AS clock, arrow_typeof(${stamp}) AS stamp, arrow_typeof(${enabled}) AS enabled FROM data"
     );
     success(&invoke(dir.path(), &config, "run", &[]));
     let types = fs::read_to_string(dir.path().join("out.csv")).unwrap();
@@ -414,7 +413,7 @@ fn decimal_precision_and_scale_are_inferred_from_constants() {
     let mut config = job();
     config["params"] = json!({"amount":{"type":"decimal"}});
     config["output"][0]["sql"] =
-        json!("SELECT $amount AS amount, arrow_typeof($amount) AS kind FROM data");
+        json!("SELECT ${amount} AS amount, arrow_typeof(${amount}) AS kind FROM data");
     for (value, expected, kind) in [
         (
             "99999999999999999999999999999999999999",
@@ -484,4 +483,86 @@ fn decimal_precision_and_scale_are_inferred_from_constants() {
         fs::read_to_string(dir.path().join("out.csv")).unwrap(),
         "amount,kind\n9007199254740993.0100,\"Decimal128(20, 4)\"\n"
     );
+}
+
+#[test]
+fn braced_bind_values_preserve_sql_strings_comments_and_quoted_identifiers() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("in.csv"), "value\na\n").unwrap();
+    let mut config = job();
+    config["params"] = json!({"X":{"type":"string"},"enabled":{"type":"boolean","default":true}});
+    config["output"][0]["sql"] = json!(
+        r#"
+        SELECT ${X} AS bound, 'it''s ${unknown}' AS quoted,
+               $$${unknown}$$ AS dollar, t."${identifier}" AS value
+        FROM (SELECT value AS "${identifier}" FROM data) t
+        WHERE ${enabled}
+        -- ${missing} $legacy
+        /* ${} ${unclosed $legacy */
+    "#
+    );
+    success(&invoke(
+        dir.path(),
+        &config,
+        "run",
+        &["-p", "X=' OR TRUE; -- ${unknown}"],
+    ));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("out.csv")).unwrap(),
+        "bound,quoted,dollar,value\n' OR TRUE; -- ${unknown},it's ${unknown},${unknown},a\n"
+    );
+
+    // SQL literal text is independent of the declared parameter namespace.
+    config.as_object_mut().unwrap().remove("params");
+    config["output"][0]["sql"] = json!("SELECT '${unknown}' AS value FROM data -- ${unclosed");
+    success(&invoke(dir.path(), &config, "run", &[]));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("out.csv")).unwrap(),
+        "value\n${unknown}\n"
+    );
+}
+
+#[test]
+fn invalid_braced_references_and_legacy_placeholders_fail_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("in.csv"), "value\na\n").unwrap();
+    fs::write(dir.path().join("out.csv"), "old").unwrap();
+    let mut config = job();
+    config["params"] = json!({"X":{"type":"string","default":"'data'"}});
+    for reference in [
+        "$X",
+        "$1",
+        "${}",
+        "${1}",
+        "${bad-name}",
+        "${X",
+        "${ X}",
+        "${X }",
+        "${X/*comment*/}",
+        "${missing}",
+        "${${X}}",
+    ] {
+        config["output"][0]["sql"] = json!(format!("SELECT {reference} AS value FROM data"));
+        for command in ["check", "explain", "run"] {
+            let output = invoke(dir.path(), &config, command, &[]);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{reference}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join("out.csv")).unwrap(),
+                "old"
+            );
+        }
+    }
+    for sql in ["SELECT * FROM ${X}", "SELECT value AS ${X} FROM data"] {
+        config["output"][0]["sql"] = json!(sql);
+        assert!(!invoke(dir.path(), &config, "run", &[]).status.success());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("out.csv")).unwrap(),
+            "old"
+        );
+    }
 }

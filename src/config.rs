@@ -35,6 +35,7 @@ struct Node {
     kind: Kind,
     origin: Origin,
     number_text: Option<String>,
+    cli_path: Option<PathBuf>,
 }
 impl Node {
     fn value(&self) -> Value {
@@ -135,6 +136,7 @@ fn parse_node(events: &[(Event, Marker)], index: &mut usize, file: &Path) -> Res
         kind,
         origin,
         number_text,
+        cli_path: None,
     })
 }
 
@@ -549,6 +551,8 @@ pub struct Dataset {
     pub id: String,
     pub format: Format,
     pub path: PathBuf,
+    #[serde(skip)]
+    pub(crate) path_template: Option<PathTemplate>,
     pub compression: Option<Compression>,
     #[serde(default)]
     pub encoding: String,
@@ -572,6 +576,18 @@ pub struct Dataset {
     pub origin: Option<Origin>,
     #[serde(skip)]
     pub sql_origin: Option<Origin>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PathTemplate {
+    pub raw: String,
+    pub base: PathBuf,
+    pub origin: Origin,
+}
+impl PathTemplate {
+    fn applies(path: &Path) -> bool {
+        path.to_str().is_some_and(|text| text.contains("${"))
+    }
 }
 impl Dataset {
     /// Allow this standalone dataset to execute trusted Lua with process privileges.
@@ -741,7 +757,8 @@ impl PathOverrides {
                     .ok_or_else(|| {
                         Error::config(format!("{option}: unknown {section} id '{id}'"))
                     })?;
-                let path = if path.is_absolute() {
+                let cli_path = path.clone();
+                let path = if path.is_absolute() || PathTemplate::applies(path) {
                     path.clone()
                 } else {
                     std::env::current_dir()
@@ -758,6 +775,7 @@ impl PathOverrides {
                     Node {
                         kind: Kind::Scalar(value),
                         number_text: None,
+                        cli_path: Some(cli_path),
                         origin: Origin {
                             file: "<command line>".into(),
                             line: 1,
@@ -805,7 +823,22 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
             if d.path.as_os_str().is_empty() {
                 return Err(Error::config("path must not be empty").context(&path.origin));
             }
-            d.path = path.origin.file.parent().unwrap().join(&d.path);
+            // Inspect the original CLI value so ${...} in the CWD remains literal.
+            let raw_path = path.cli_path.as_ref().unwrap_or(&d.path);
+            let templated = PathTemplate::applies(raw_path);
+            let base = if templated && path.origin.file == Path::new("<command line>") {
+                std::env::current_dir().map_err(|e| Error::config(e.to_string()))?
+            } else {
+                path.origin.file.parent().unwrap().to_owned()
+            };
+            if templated {
+                d.path_template = Some(PathTemplate {
+                    raw: raw_path.to_str().unwrap().to_owned(),
+                    base: base.clone(),
+                    origin: path.origin.clone(),
+                });
+            }
+            d.path = base.join(&d.path);
             if let Some(lua) = &mut d.lua {
                 let raw = n.get("lua").unwrap();
                 lua.base_dir = raw
