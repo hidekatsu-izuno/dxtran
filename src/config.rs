@@ -258,6 +258,7 @@ impl Loader {
 pub enum Format {
     Csv,
     Fixed,
+    Lines,
     Rdw,
     Parquet,
     Lua,
@@ -358,10 +359,32 @@ pub struct Fixed {
     pub record_length: Option<usize>,
 }
 #[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Lines {
+    pub line_ending: String,
+    pub record_length: Option<usize>,
+    pub trim_trailing_spaces: bool,
+}
+impl Default for Lines {
+    fn default() -> Self {
+        Self {
+            line_ending: "lf".into(),
+            record_length: None,
+            trim_trailing_spaces: true,
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rdw {
+    #[serde(default)]
+    pub bdw: bool,
+    #[serde(default)]
+    pub spanned: bool,
     #[serde(default = "rdw_max")]
     pub max_record_length: usize,
+    #[serde(default = "rdw_max")]
+    pub max_block_length: usize,
 }
 fn rdw_max() -> usize {
     32760
@@ -369,7 +392,40 @@ fn rdw_max() -> usize {
 impl Default for Rdw {
     fn default() -> Self {
         Self {
+            bdw: false,
+            spanned: false,
             max_record_length: rdw_max(),
+            max_block_length: rdw_max(),
+        }
+    }
+}
+impl Rdw {
+    pub(crate) fn validate(&self) -> Result<()> {
+        let minimum = if self.spanned { 5 } else { 4 };
+        let maximum = if self.spanned {
+            crate::framing::MAX_RECORD + 4
+        } else {
+            65535
+        };
+        if !(minimum..=maximum).contains(&self.max_record_length) {
+            return Err(Error::config(format!(
+                "rdw.max_record_length must be {minimum}..{maximum}"
+            )));
+        }
+        let minimum_block = if self.spanned && self.bdw { 9 } else { 8 };
+        if !(minimum_block..=32760).contains(&self.max_block_length) {
+            return Err(Error::config(format!(
+                "rdw.max_block_length must be {minimum_block}..32760"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_limit(&self) -> usize {
+        if self.bdw && !self.spanned {
+            self.max_record_length.min(self.max_block_length - 4)
+        } else {
+            self.max_record_length
         }
     }
 }
@@ -395,12 +451,12 @@ pub struct Field {
     #[serde(rename = "type")]
     pub kind: Option<String>,
     pub precision: Option<u8>,
-    pub scale: Option<u8>,
+    pub scale: Option<i8>,
     pub zone: Option<String>,
     pub nullable: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_trim")]
     pub trim: Option<String>,
-    pub pad_char: Option<String>,
+    pub space_char: Option<String>,
     pub null_if: Option<Vec<String>>,
     pub null_if_pattern: Option<String>,
     pub null_output: Option<String>,
@@ -493,6 +549,7 @@ pub struct Dataset {
     pub check: Vec<Check>,
     pub csv: Option<Csv>,
     pub fixed: Option<Fixed>,
+    pub lines: Option<Lines>,
     pub rdw: Option<Rdw>,
     pub parquet: Option<Parquet>,
     pub lua: Option<Lua>,
@@ -523,6 +580,7 @@ pub struct Process {
 }
 #[derive(Clone, Debug)]
 pub struct Job {
+    pub exit_codes: ExitCodes,
     pub lua: Option<JobLua>,
     pub(crate) lua_runtime: crate::lua::Runtime,
     pub input: Vec<Dataset>,
@@ -530,6 +588,49 @@ pub struct Job {
     pub output: Vec<Dataset>,
     pub hashes: BTreeMap<PathBuf, String>,
     pub expanded_hash: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ExitCodes(BTreeMap<u8, u8>);
+impl ExitCodes {
+    pub fn resolve(&self, original: u8) -> u8 {
+        self.0.get(&original).copied().unwrap_or(original)
+    }
+
+    fn parse(node: Option<&Node>) -> Result<Self> {
+        let Some(node) = node else {
+            return Ok(Self::default());
+        };
+        let Kind::Mapping(entries) = &node.kind else {
+            return Err(Error::config("exit_codes must be a mapping").context(&node.origin));
+        };
+        let mut replacements = BTreeMap::new();
+        for (key, value) in entries {
+            let original = match key.as_str() {
+                "0" => 0,
+                "2" => 2,
+                "3" => 3,
+                "4" => 4,
+                "5" => 5,
+                _ => {
+                    return Err(Error::config(
+                        "exit_codes keys must be \"0\", \"2\", \"3\", \"4\" or \"5\"",
+                    )
+                    .context(&value.origin));
+                }
+            };
+            let replacement = value
+                .value()
+                .as_u64()
+                .and_then(|code| u8::try_from(code).ok())
+                .ok_or_else(|| {
+                    Error::config("exit_codes replacements must be integers in 0..255")
+                        .context(&value.origin)
+                })?;
+            replacements.insert(original, replacement);
+        }
+        Ok(Self(replacements))
+    }
 }
 impl Job {
     /// Explicitly trust all Lua code and native dependencies used by this job.
@@ -767,8 +868,17 @@ pub fn load(path: &Path) -> Result<Job> {
     load_with_paths(path, &PathOverrides::default())
 }
 pub fn load_with_paths(path: &Path, paths: &PathOverrides) -> Result<Job> {
+    load_with_paths_and_exit_codes(path, paths, &mut ExitCodes::default())
+}
+pub(crate) fn load_with_paths_and_exit_codes(
+    path: &Path,
+    paths: &PathOverrides,
+    exit_codes: &mut ExitCodes,
+) -> Result<Job> {
+    *exit_codes = ExitCodes::default();
     let mut loader = Loader::default();
     let mut root = loader.file(path)?;
+    *exit_codes = ExitCodes::parse(root.get("exit_codes"))?;
     fn validate_nulls(node: &Node, allow: bool) -> Result<()> {
         match &node.kind {
             Kind::Scalar(Value::Null) if !allow => {
@@ -796,11 +906,15 @@ pub fn load_with_paths(path: &Path, paths: &PathOverrides) -> Result<Job> {
     };
     if !m.contains_key("input")
         || !m.contains_key("output")
-        || m.keys()
-            .any(|k| !matches!(k.as_str(), "lua" | "input" | "process" | "output"))
+        || m.keys().any(|k| {
+            !matches!(
+                k.as_str(),
+                "exit_codes" | "lua" | "input" | "process" | "output"
+            )
+        })
     {
         return Err(Error::config(
-            "job requires input and output; lua and process are optional and other keys are forbidden",
+            "job requires input and output; exit_codes, lua and process are optional and other keys are forbidden",
         )
         .context(&root.origin));
     }
@@ -855,6 +969,7 @@ pub fn load_with_paths(path: &Path, paths: &PathOverrides) -> Result<Job> {
         }
     }
     Ok(Job {
+        exit_codes: exit_codes.clone(),
         lua,
         lua_runtime,
         input,

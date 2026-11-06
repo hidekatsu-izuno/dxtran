@@ -1,3 +1,6 @@
+pub(crate) mod lines;
+pub(crate) mod rdw;
+
 use crate::error::{Error, Result};
 use std::io::{Read, Write};
 pub const MAX_RECORD: usize = 16 * 1024 * 1024;

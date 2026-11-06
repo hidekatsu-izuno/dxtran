@@ -121,8 +121,8 @@ pub fn references(sql: &str) -> Result<BTreeSet<String>> {
     }
     Ok(refs.tables)
 }
-// DataFusion 55 lowers ALL set operations to semi/anti joins. Tag their left
-// operands in the AST so order propagation can implement SQL multiset counts.
+// DataFusion 55 lowers ALL set operations to semi/anti joins. Wrap each entire
+// operation so its marker identifies that node, regardless of operand qualifiers.
 pub(super) fn prepare_sql(sql: &str, sets: &mut BTreeMap<String, bool>) -> Result<String> {
     let initial_count = sets.len();
     struct Tags<'a> {
@@ -152,13 +152,13 @@ pub(super) fn prepare_sql(sql: &str, sets: &mut BTreeMap<String, bool>) -> Resul
                         n += 1;
                     };
                     self.sets.insert(marker.clone(), *op == SetOperator::Except);
-                    let wrapper = format!("SELECT * FROM ({left}) AS \"{marker}\"");
+                    let wrapper = format!("SELECT * FROM ({body}) AS \"{marker}\"");
                     let mut parsed = Parser::parse_sql(&GenericDialect {}, &wrapper)
                         .map_err(|e| e.to_string())?;
                     let Statement::Query(query) = parsed.remove(0) else {
                         unreachable!()
                     };
-                    *left = query.body;
+                    *body = *query.body;
                 }
             }
             Ok(())

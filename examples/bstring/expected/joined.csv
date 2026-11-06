@@ -1,0 +1,4 @@
+code_text,label,payload
+a,小文字,0e45
+A,大文字,00ff
+0,数字,ff00

@@ -25,6 +25,7 @@ use std::{fs::File, io::BufReader, sync::Arc};
 enum Reader {
     Csv(CsvReader<TextReader<crate::compression::Input>>),
     Physical(BufReader<crate::compression::Input>),
+    Rdw(framing::rdw::RdwReader<BufReader<crate::compression::Input>>),
     Parquet(Box<crate::parquet_io::Input>),
     Lua(Box<super::lua::Input>),
 }
@@ -106,6 +107,14 @@ impl InputReader {
                 &layout.schema,
                 file,
             )?))
+        } else if dataset.format == Format::Rdw {
+            Reader::Rdw(framing::rdw::RdwReader::new(
+                BufReader::new(
+                    crate::compression::Input::new(file, dataset.compression)
+                        .map_err(|e| Error::input(e.to_string()).context(dataset.path.display()))?,
+                ),
+                dataset.rdw.clone().unwrap_or_default(),
+            ))
         } else {
             Reader::Physical(BufReader::new(
                 crate::compression::Input::new(file, dataset.compression)
@@ -174,6 +183,7 @@ impl InputReader {
         let id = &self.dataset.id;
         let path = &self.dataset.path;
         let position = self.byte_position;
+        let mut record_position = position;
         let context = |e: Error| {
             e.context(format!(
                 "input {id} {} record {record} byte {position}",
@@ -194,29 +204,44 @@ impl InputReader {
                     ))));
                 }
             }
+            Reader::Rdw(reader) => {
+                let Some(location) = reader.read_into(&mut self.body).map_err(context)? else {
+                    return Ok(false);
+                };
+                record_position = location.byte;
+                self.byte_position = reader.position();
+                if self.layout.conditional.is_none()
+                    && (self.body.len() < self.layout.length
+                        || !self.layout.rest && self.body.len() != self.layout.length)
+                {
+                    return Err(reader.record_context(context(Error::input(
+                        "record body does not match layout length",
+                    ))));
+                }
+            }
             Reader::Physical(reader) => {
-                let found = match self.dataset.format {
-                    Format::Fixed => framing::fixed_into(
+                let physical_bytes = if let Some(lines) = &self.layout.lines {
+                    let Some(bytes) = lines
+                        .read_into(reader, self.layout.length, &mut self.body)
+                        .map_err(context)?
+                    else {
+                        return Ok(false);
+                    };
+                    bytes as u64
+                } else {
+                    let found = framing::fixed_into(
                         reader,
                         self.layout.length,
                         &self.layout.separator,
                         &mut self.body,
-                    ),
-                    Format::Rdw => {
-                        framing::rdw_into(reader, self.layout.max_record_length, &mut self.body)
+                    )
+                    .map_err(context)?;
+                    if !found {
+                        return Ok(false);
                     }
-                    _ => unreachable!(),
-                }
-                .map_err(context)?;
-                if !found {
-                    return Ok(false);
-                }
-                self.byte_position += self.body.len() as u64
-                    + if self.dataset.format == Format::Rdw {
-                        4
-                    } else {
-                        self.layout.separator.len() as u64
-                    };
+                    self.body.len() as u64 + self.layout.separator.len() as u64
+                };
+                self.byte_position += physical_bytes;
                 if self.layout.conditional.is_none()
                     && (self.body.len() < self.layout.length
                         || !self.layout.rest && self.body.len() != self.layout.length)
@@ -227,7 +252,7 @@ impl InputReader {
                 }
             }
         }
-        self.record_position = position;
+        self.record_position = record_position;
         self.record = record;
         self.record_ready = true;
         self.checked_row = None;
@@ -249,6 +274,11 @@ impl InputReader {
             return Ok(());
         }
         let context = |e: Error| {
+            let e = if let Reader::Rdw(reader) = &self.reader {
+                reader.record_context(e)
+            } else {
+                e
+            };
             e.context(format!(
                 "input {} {} record {} byte {}",
                 self.dataset.id,

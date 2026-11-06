@@ -288,7 +288,8 @@ fn multibyte_pad_cannot_split_characters() {
         ("utf-16be", 8, "0041300030003000"),
     ] {
         let field: Field =
-            serde_json::from_value(json!({"name":"name","length":width,"pad_char":"　"})).unwrap();
+            serde_json::from_value(json!({"name":"name","length":width,"space_char":"　"}))
+                .unwrap();
         let f = CompiledField::compile(
             field,
             Format::Fixed,
@@ -311,5 +312,111 @@ fn multibyte_pad_cannot_split_characters() {
             })
             .is_err()
         );
+    }
+}
+
+#[test]
+fn encoded_padding_preserves_alignment_and_shift_boundaries() {
+    for (label, pad, value) in [
+        ("shift_jis", "　", "日本"),
+        ("euc-jp", "　", "日本"),
+        ("jef", "　", "日本"),
+        ("utf-16le", "　", "日本"),
+        ("utf-16be", "　", "日本"),
+        ("windows-1252", " ", "é"),
+        ("cp930", " ", "日本"),
+        ("cp939", " ", "日本"),
+        ("iso-2022-jp", " ", "日本"),
+    ] {
+        let encoding = TextEncoding::resolve(label).unwrap();
+        for count in [1, 2, 31] {
+            let expected = encoding
+                .encode(&format!("{value}{}", pad.repeat(count)))
+                .unwrap();
+            let field: Field = serde_json::from_value(json!({
+                "name":"text", "length":expected.len(), "space_char":pad
+            }))
+            .unwrap();
+            let f = CompiledField::compile(
+                field,
+                Format::Fixed,
+                dxtran::field::Direction::Output,
+                0,
+                encoding,
+            )
+            .unwrap();
+            assert_eq!(f.padded(value).unwrap(), expected, "{label}/{count}");
+        }
+    }
+    for (label, pad) in [
+        ("shift_jis", "　"),
+        ("utf-16le", "　"),
+        ("utf-16be", "　"),
+        ("cp930", " "),
+        ("cp939", " "),
+        ("iso-2022-jp", " "),
+    ] {
+        let encoding = TextEncoding::resolve(label).unwrap();
+        let expected = encoding.encode(&format!("{pad}{pad}-12")).unwrap();
+        let field: Field = serde_json::from_value(json!({
+            "name":"amount", "type":"decimal", "precision":2,
+            "length":expected.len(), "space_char":pad
+        }))
+        .unwrap();
+        let f = CompiledField::compile(
+            field,
+            Format::Fixed,
+            dxtran::field::Direction::Output,
+            0,
+            encoding,
+        )
+        .unwrap();
+        assert_eq!(
+            f.encode(&[ScalarValue::Decimal128(Some(-12), 2, 0)], Format::Fixed)
+                .unwrap(),
+            expected,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn padding_rejects_space_char_requiring_shift_sequences() {
+    for label in ["cp930", "cp939", "iso-2022-jp"] {
+        let encoding = TextEncoding::resolve(label).unwrap();
+        let expected = encoding.encode("日本").unwrap();
+        let field: Field = serde_json::from_value(json!({
+            "name":"text", "length":expected.len(), "space_char":"　"
+        }))
+        .unwrap();
+        let f = CompiledField::compile(
+            field.clone(),
+            Format::Fixed,
+            dxtran::field::Direction::Input,
+            0,
+            encoding,
+        )
+        .unwrap();
+        // Input trimming and values that need no padding still work.
+        assert_eq!(f.padded("日本").unwrap(), expected, "{label}");
+        assert_eq!(
+            f.decode(&encoding.encode("日　").unwrap()).unwrap(),
+            [ScalarValue::Utf8(Some("日".into()))],
+            "{label}"
+        );
+        let err = f.padded("日").unwrap_err();
+        assert_eq!(err.code, 5, "{label}");
+        assert!(err.message.contains("shift sequences"), "{label}: {err}");
+        // Fixed output validates its NULL padding at compile time.
+        let err = CompiledField::compile(
+            field,
+            Format::Fixed,
+            dxtran::field::Direction::Output,
+            0,
+            encoding,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, 2, "{label}");
+        assert!(err.message.contains("shift sequences"), "{label}: {err}");
     }
 }

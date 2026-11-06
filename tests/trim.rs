@@ -50,7 +50,7 @@ fn physical_input_trim_preserves_other_whitespace_and_multibyte_characters() {
             ] {
                 for format in [Format::Fixed, Format::Rdw] {
                     let f = field(
-                        json!({"name":"text", "length":bytes.len(), "trim":trim, "pad_char":pad}),
+                        json!({"name":"text", "length":bytes.len(), "trim":trim, "space_char":pad}),
                         format,
                         Direction::Input,
                         encoding,
@@ -107,7 +107,7 @@ fn fixed_output_trims_before_width_validation_and_pads_again() {
     }
 
     let f = field(
-        json!({"name":"text", "length":8, "trim":"both", "pad_char":"　"}),
+        json!({"name":"text", "length":8, "trim":"both", "space_char":"　"}),
         Format::Fixed,
         Direction::Output,
         "utf-16le",

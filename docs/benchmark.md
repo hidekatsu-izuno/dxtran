@@ -58,6 +58,8 @@
 
 [最初の固定長測定・全80試行](../benchmarks/results/fixed-current-256mib.json)。CPU時間とRSSも含め、実運用の文字コード・項目数・SQL・ストレージで評価してください。
 
+checkなし／入力・出力check 1件・3件、100列のParquetから2列を選ぶケース、100件・1,000件のprocess計画も測定に追加しました。[測定方法・2026-11-06の結果](../benchmarks/README.md#check少数列選択大量process)と[全72試行](../benchmarks/results/review-workloads-65536.json)を参照してください。Parquetの未使用列を含む全列検証は維持しています。
+
 ## 共通条件・検証
 
 - AMD Ryzen AI 9 465、20論理CPUが利用可能、WSL2（Linux 6.18.54.1）、ext2/ext3と報告される同一ファイルシステム上で入力・一時領域・出力を作成。

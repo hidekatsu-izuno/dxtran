@@ -30,7 +30,7 @@ impl PhysicalEncoder {
             batch.num_rows() * (self.layout.length + self.layout.separator.len()),
         );
         let mut rows = start_row;
-        self.write_batch(batch, &mut bytes, &mut rows, Some(cancelled))?;
+        self.write_batch(batch, &mut bytes, &mut rows, Some(cancelled), None)?;
         Ok(bytes)
     }
     pub(super) fn write_batch(
@@ -39,6 +39,7 @@ impl PhysicalEncoder {
         writer: &mut impl Write,
         rows: &mut u64,
         cancelled: Option<&AtomicBool>,
+        mut rdw: Option<&mut framing::rdw::RdwWriter>,
     ) -> Result<()> {
         let mut body = Vec::with_capacity(self.layout.length);
         let mut bytes = Vec::new();
@@ -99,7 +100,7 @@ impl PhysicalEncoder {
                             }
                         }
                     }
-                    if f.kind.decimal() && f.kind != FieldType::Decimal {
+                    if f.kind.decimal() && f.kind != FieldType::Decimal || f.scaled_integer() {
                         let column = batch.column(indices[0]);
                         if let DataType::Decimal128(_, scale) = column.data_type() {
                             let array = column.as_primitive::<Decimal128Type>();
@@ -140,8 +141,15 @@ impl PhysicalEncoder {
                     ))
                 })?;
             }
-            if self.format == Format::Rdw {
-                framing::write_rdw(writer, &body, self.layout.max_record_length)?;
+            if let Some(lines) = &self.layout.lines {
+                lines
+                    .write(writer, &body)
+                    .map_err(|e| e.context(format!("output {} record {}", self.id, *rows + 1)))?;
+            } else if self.format == Format::Rdw {
+                rdw.as_deref_mut()
+                    .expect("RDW writer")
+                    .write_record(writer, &body)
+                    .map_err(|e| e.context(format!("output {} record {}", self.id, *rows + 1)))?;
             } else {
                 writer
                     .write_all(&body)

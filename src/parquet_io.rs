@@ -78,10 +78,11 @@ pub(crate) fn layout(d: &Dataset, result: Option<SchemaRef>) -> Result<RecordLay
         || !d.fields.is_empty()
         || d.csv.is_some()
         || d.fixed.is_some()
+        || d.lines.is_some()
         || d.rdw.is_some()
     {
         return Err(Error::config(
-            "parquet uses its native schema; encoding, fields, csv, fixed and rdw are not allowed",
+            "parquet uses its native schema; encoding, fields, csv, fixed, lines and rdw are not allowed",
         ));
     }
     if !matches!(
@@ -119,6 +120,7 @@ pub(crate) fn layout(d: &Dataset, result: Option<SchemaRef>) -> Result<RecordLay
         format: Format::Parquet,
         // The record-layout encoding is unused for native Arrow storage.
         encoding: TextEncoding::UTF_8,
+        lines: None,
         conditional: None,
         checks: Default::default(),
     })

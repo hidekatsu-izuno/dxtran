@@ -1,0 +1,1047 @@
+{
+  "environment": {
+    "platform": "Linux-6.18.54.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "cpu_count": 20,
+    "cpu_model": "AMD Ryzen AI 9 465 w/ Radeon 880M",
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19
+    ],
+    "binary_sha256": "36621da520a4ea6cb0f3361d758c6bf06e4784f845ebb31ed20f02b2ad417cd3",
+    "fixture_sha256": "b1a1fd6f5ab597fad452213197443416b30effb927725661f8949394df0ee6ad",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  },
+  "settings": {
+    "rows": 65536,
+    "repeats": 3,
+    "warmups": 1,
+    "threads": [
+      1,
+      4
+    ],
+    "process_counts": [
+      100,
+      1000
+    ],
+    "profile": "release",
+    "skip_build": true,
+    "work_dir": "None",
+    "result": "/home/hidek/git/dxtran/benchmarks/results/review-workloads-65536.json",
+    "date_utc": "2026-11-06T00:08:46Z",
+    "cache": "warm",
+    "order_seed": 20261106,
+    "parquet_validation": "all columns, including unused columns"
+  },
+  "layouts": {
+    "16": {
+      "snappy_8192": {
+        "bytes": 12794795,
+        "columns": 16,
+        "max_group_rows": 8192,
+        "row_groups": 8,
+        "rows": 65536
+      },
+      "zstd_65536": {
+        "bytes": 8701849,
+        "columns": 16,
+        "max_group_rows": 65536,
+        "row_groups": 1,
+        "rows": 65536
+      },
+      "source_sha256": "66a138f4284c35f9a9bda9a9afa571cd82a79a68507fb961de6459d03efb599c",
+      "full_csv_bytes": 16777216
+    },
+    "100": {
+      "snappy_8192": {
+        "bytes": 110413048,
+        "columns": 100,
+        "max_group_rows": 8192,
+        "row_groups": 8,
+        "rows": 65536
+      },
+      "zstd_65536": {
+        "bytes": 66806461,
+        "columns": 100,
+        "max_group_rows": 65536,
+        "row_groups": 1,
+        "rows": 65536
+      },
+      "source_sha256": "2967bc025621db47c93ce8c5a2597eebf9577164ae800bc48a5e53a9fa47f4da",
+      "full_csv_bytes": 104857600
+    }
+  },
+  "plans": {
+    "check_none_threads_1": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_none_threads_4": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_input_1_threads_1": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_input_1_threads_4": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_input_3_threads_1": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_input_3_threads_4": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_output_1_threads_1": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_output_1_threads_4": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_output_3_threads_1": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "check_output_3_threads_4": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, amount_0@8 as amount_0, amount_1@9 as amount_1, amount_2@10 as amount_2, amount_3@11 as amount_3, amount_4@12 as amount_4, amount_5@13 as amount_5, amount_6@14 as amount_6, amount_7@15 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "parquet_100_select_100_threads_1": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.text_8, data.text_9, data.text_10, data.text_11, data.text_12, data.text_13, data.text_14, data.text_15, data.text_16, data.text_17, data.text_18, data.text_19, data.text_20, data.text_21, data.text_22, data.text_23, data.text_24, data.text_25, data.text_26, data.text_27, data.text_28, data.text_29, data.text_30, data.text_31, data.text_32, data.text_33, data.text_34, data.text_35, data.text_36, data.text_37, data.text_38, data.text_39, data.text_40, data.text_41, data.text_42, data.text_43, data.text_44, data.text_45, data.text_46, data.text_47, data.text_48, data.text_49, data.text_50, data.text_51, data.text_52, data.text_53, data.text_54, data.text_55, data.text_56, data.text_57, data.text_58, data.text_59, data.text_60, data.text_61, data.text_62, data.text_63, data.text_64, data.text_65, data.text_66, data.text_67, data.text_68, data.text_69, data.text_70, data.text_71, data.text_72, data.text_73, data.text_74, data.text_75, data.text_76, data.text_77, data.text_78, data.text_79, data.text_80, data.text_81, data.text_82, data.text_83, data.text_84, data.text_85, data.text_86, data.text_87, data.text_88, data.text_89, data.text_90, data.text_91, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.text_8, data.text_9, data.text_10, data.text_11, data.text_12, data.text_13, data.text_14, data.text_15, data.text_16, data.text_17, data.text_18, data.text_19, data.text_20, data.text_21, data.text_22, data.text_23, data.text_24, data.text_25, data.text_26, data.text_27, data.text_28, data.text_29, data.text_30, data.text_31, data.text_32, data.text_33, data.text_34, data.text_35, data.text_36, data.text_37, data.text_38, data.text_39, data.text_40, data.text_41, data.text_42, data.text_43, data.text_44, data.text_45, data.text_46, data.text_47, data.text_48, data.text_49, data.text_50, data.text_51, data.text_52, data.text_53, data.text_54, data.text_55, data.text_56, data.text_57, data.text_58, data.text_59, data.text_60, data.text_61, data.text_62, data.text_63, data.text_64, data.text_65, data.text_66, data.text_67, data.text_68, data.text_69, data.text_70, data.text_71, data.text_72, data.text_73, data.text_74, data.text_75, data.text_76, data.text_77, data.text_78, data.text_79, data.text_80, data.text_81, data.text_82, data.text_83, data.text_84, data.text_85, data.text_86, data.text_87, data.text_88, data.text_89, data.text_90, data.text_91, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, text_8, text_9, text_10, text_11, text_12, text_13, text_14, text_15, text_16, text_17, text_18, text_19, text_20, text_21, text_22, text_23, text_24, text_25, text_26, text_27, text_28, text_29, text_30, text_31, text_32, text_33, text_34, text_35, text_36, text_37, text_38, text_39, text_40, text_41, text_42, text_43, text_44, text_45, text_46, text_47, text_48, text_49, text_50, text_51, text_52, text_53, text_54, text_55, text_56, text_57, text_58, text_59, text_60, text_61, text_62, text_63, text_64, text_65, text_66, text_67, text_68, text_69, text_70, text_71, text_72, text_73, text_74, text_75, text_76, text_77, text_78, text_79, text_80, text_81, text_82, text_83, text_84, text_85, text_86, text_87, text_88, text_89, text_90, text_91, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, text_8@8 as text_8, text_9@9 as text_9, text_10@10 as text_10, text_11@11 as text_11, text_12@12 as text_12, text_13@13 as text_13, text_14@14 as text_14, text_15@15 as text_15, text_16@16 as text_16, text_17@17 as text_17, text_18@18 as text_18, text_19@19 as text_19, text_20@20 as text_20, text_21@21 as text_21, text_22@22 as text_22, text_23@23 as text_23, text_24@24 as text_24, text_25@25 as text_25, text_26@26 as text_26, text_27@27 as text_27, text_28@28 as text_28, text_29@29 as text_29, text_30@30 as text_30, text_31@31 as text_31, text_32@32 as text_32, text_33@33 as text_33, text_34@34 as text_34, text_35@35 as text_35, text_36@36 as text_36, text_37@37 as text_37, text_38@38 as text_38, text_39@39 as text_39, text_40@40 as text_40, text_41@41 as text_41, text_42@42 as text_42, text_43@43 as text_43, text_44@44 as text_44, text_45@45 as text_45, text_46@46 as text_46, text_47@47 as text_47, text_48@48 as text_48, text_49@49 as text_49, text_50@50 as text_50, text_51@51 as text_51, text_52@52 as text_52, text_53@53 as text_53, text_54@54 as text_54, text_55@55 as text_55, text_56@56 as text_56, text_57@57 as text_57, text_58@58 as text_58, text_59@59 as text_59, text_60@60 as text_60, text_61@61 as text_61, text_62@62 as text_62, text_63@63 as text_63, text_64@64 as text_64, text_65@65 as text_65, text_66@66 as text_66, text_67@67 as text_67, text_68@68 as text_68, text_69@69 as text_69, text_70@70 as text_70, text_71@71 as text_71, text_72@72 as text_72, text_73@73 as text_73, text_74@74 as text_74, text_75@75 as text_75, text_76@76 as text_76, text_77@77 as text_77, text_78@78 as text_78, text_79@79 as text_79, text_80@80 as text_80, text_81@81 as text_81, text_82@82 as text_82, text_83@83 as text_83, text_84@84 as text_84, text_85@85 as text_85, text_86@86 as text_86, text_87@87 as text_87, text_88@88 as text_88, text_89@89 as text_89, text_90@90 as text_90, text_91@91 as text_91, amount_0@92 as amount_0, amount_1@93 as amount_1, amount_2@94 as amount_2, amount_3@95 as amount_3, amount_4@96 as amount_4, amount_5@97 as amount_5, amount_6@98 as amount_6, amount_7@99 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "parquet_100_select_100_threads_4": "output result\nLogical plan:\nProjection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.text_8, data.text_9, data.text_10, data.text_11, data.text_12, data.text_13, data.text_14, data.text_15, data.text_16, data.text_17, data.text_18, data.text_19, data.text_20, data.text_21, data.text_22, data.text_23, data.text_24, data.text_25, data.text_26, data.text_27, data.text_28, data.text_29, data.text_30, data.text_31, data.text_32, data.text_33, data.text_34, data.text_35, data.text_36, data.text_37, data.text_38, data.text_39, data.text_40, data.text_41, data.text_42, data.text_43, data.text_44, data.text_45, data.text_46, data.text_47, data.text_48, data.text_49, data.text_50, data.text_51, data.text_52, data.text_53, data.text_54, data.text_55, data.text_56, data.text_57, data.text_58, data.text_59, data.text_60, data.text_61, data.text_62, data.text_63, data.text_64, data.text_65, data.text_66, data.text_67, data.text_68, data.text_69, data.text_70, data.text_71, data.text_72, data.text_73, data.text_74, data.text_75, data.text_76, data.text_77, data.text_78, data.text_79, data.text_80, data.text_81, data.text_82, data.text_83, data.text_84, data.text_85, data.text_86, data.text_87, data.text_88, data.text_89, data.text_90, data.text_91, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.text_2, data.text_3, data.text_4, data.text_5, data.text_6, data.text_7, data.text_8, data.text_9, data.text_10, data.text_11, data.text_12, data.text_13, data.text_14, data.text_15, data.text_16, data.text_17, data.text_18, data.text_19, data.text_20, data.text_21, data.text_22, data.text_23, data.text_24, data.text_25, data.text_26, data.text_27, data.text_28, data.text_29, data.text_30, data.text_31, data.text_32, data.text_33, data.text_34, data.text_35, data.text_36, data.text_37, data.text_38, data.text_39, data.text_40, data.text_41, data.text_42, data.text_43, data.text_44, data.text_45, data.text_46, data.text_47, data.text_48, data.text_49, data.text_50, data.text_51, data.text_52, data.text_53, data.text_54, data.text_55, data.text_56, data.text_57, data.text_58, data.text_59, data.text_60, data.text_61, data.text_62, data.text_63, data.text_64, data.text_65, data.text_66, data.text_67, data.text_68, data.text_69, data.text_70, data.text_71, data.text_72, data.text_73, data.text_74, data.text_75, data.text_76, data.text_77, data.text_78, data.text_79, data.text_80, data.text_81, data.text_82, data.text_83, data.text_84, data.text_85, data.text_86, data.text_87, data.text_88, data.text_89, data.text_90, data.text_91, data.amount_0, data.amount_1, data.amount_2, data.amount_3, data.amount_4, data.amount_5, data.amount_6, data.amount_7, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, text_8, text_9, text_10, text_11, text_12, text_13, text_14, text_15, text_16, text_17, text_18, text_19, text_20, text_21, text_22, text_23, text_24, text_25, text_26, text_27, text_28, text_29, text_30, text_31, text_32, text_33, text_34, text_35, text_36, text_37, text_38, text_39, text_40, text_41, text_42, text_43, text_44, text_45, text_46, text_47, text_48, text_49, text_50, text_51, text_52, text_53, text_54, text_55, text_56, text_57, text_58, text_59, text_60, text_61, text_62, text_63, text_64, text_65, text_66, text_67, text_68, text_69, text_70, text_71, text_72, text_73, text_74, text_75, text_76, text_77, text_78, text_79, text_80, text_81, text_82, text_83, text_84, text_85, text_86, text_87, text_88, text_89, text_90, text_91, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1, text_2@2 as text_2, text_3@3 as text_3, text_4@4 as text_4, text_5@5 as text_5, text_6@6 as text_6, text_7@7 as text_7, text_8@8 as text_8, text_9@9 as text_9, text_10@10 as text_10, text_11@11 as text_11, text_12@12 as text_12, text_13@13 as text_13, text_14@14 as text_14, text_15@15 as text_15, text_16@16 as text_16, text_17@17 as text_17, text_18@18 as text_18, text_19@19 as text_19, text_20@20 as text_20, text_21@21 as text_21, text_22@22 as text_22, text_23@23 as text_23, text_24@24 as text_24, text_25@25 as text_25, text_26@26 as text_26, text_27@27 as text_27, text_28@28 as text_28, text_29@29 as text_29, text_30@30 as text_30, text_31@31 as text_31, text_32@32 as text_32, text_33@33 as text_33, text_34@34 as text_34, text_35@35 as text_35, text_36@36 as text_36, text_37@37 as text_37, text_38@38 as text_38, text_39@39 as text_39, text_40@40 as text_40, text_41@41 as text_41, text_42@42 as text_42, text_43@43 as text_43, text_44@44 as text_44, text_45@45 as text_45, text_46@46 as text_46, text_47@47 as text_47, text_48@48 as text_48, text_49@49 as text_49, text_50@50 as text_50, text_51@51 as text_51, text_52@52 as text_52, text_53@53 as text_53, text_54@54 as text_54, text_55@55 as text_55, text_56@56 as text_56, text_57@57 as text_57, text_58@58 as text_58, text_59@59 as text_59, text_60@60 as text_60, text_61@61 as text_61, text_62@62 as text_62, text_63@63 as text_63, text_64@64 as text_64, text_65@65 as text_65, text_66@66 as text_66, text_67@67 as text_67, text_68@68 as text_68, text_69@69 as text_69, text_70@70 as text_70, text_71@71 as text_71, text_72@72 as text_72, text_73@73 as text_73, text_74@74 as text_74, text_75@75 as text_75, text_76@76 as text_76, text_77@77 as text_77, text_78@78 as text_78, text_79@79 as text_79, text_80@80 as text_80, text_81@81 as text_81, text_82@82 as text_82, text_83@83 as text_83, text_84@84 as text_84, text_85@85 as text_85, text_86@86 as text_86, text_87@87 as text_87, text_88@88 as text_88, text_89@89 as text_89, text_90@90 as text_90, text_91@91 as text_91, amount_0@92 as amount_0, amount_1@93 as amount_1, amount_2@94 as amount_2, amount_3@95 as amount_3, amount_4@96 as amount_4, amount_5@97 as amount_5, amount_6@98 as amount_6, amount_7@99 as amount_7]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "parquet_100_select_2_threads_1": "output result\nLogical plan:\nProjection: data.text_0, data.text_1\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, text_8, text_9, text_10, text_11, text_12, text_13, text_14, text_15, text_16, text_17, text_18, text_19, text_20, text_21, text_22, text_23, text_24, text_25, text_26, text_27, text_28, text_29, text_30, text_31, text_32, text_33, text_34, text_35, text_36, text_37, text_38, text_39, text_40, text_41, text_42, text_43, text_44, text_45, text_46, text_47, text_48, text_49, text_50, text_51, text_52, text_53, text_54, text_55, text_56, text_57, text_58, text_59, text_60, text_61, text_62, text_63, text_64, text_65, text_66, text_67, text_68, text_69, text_70, text_71, text_72, text_73, text_74, text_75, text_76, text_77, text_78, text_79, text_80, text_81, text_82, text_83, text_84, text_85, text_86, text_87, text_88, text_89, text_90, text_91, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n",
+    "parquet_100_select_2_threads_4": "output result\nLogical plan:\nProjection: data.text_0, data.text_1\n  Sort: dxt$order_2 ASC NULLS LAST\n    Projection: data.text_0, data.text_1, data.dxt$order_1 AS dxt$order_2\n      TableScan: data projection=[text_0, text_1, text_2, text_3, text_4, text_5, text_6, text_7, text_8, text_9, text_10, text_11, text_12, text_13, text_14, text_15, text_16, text_17, text_18, text_19, text_20, text_21, text_22, text_23, text_24, text_25, text_26, text_27, text_28, text_29, text_30, text_31, text_32, text_33, text_34, text_35, text_36, text_37, text_38, text_39, text_40, text_41, text_42, text_43, text_44, text_45, text_46, text_47, text_48, text_49, text_50, text_51, text_52, text_53, text_54, text_55, text_56, text_57, text_58, text_59, text_60, text_61, text_62, text_63, text_64, text_65, text_66, text_67, text_68, text_69, text_70, text_71, text_72, text_73, text_74, text_75, text_76, text_77, text_78, text_79, text_80, text_81, text_82, text_83, text_84, text_85, text_86, text_87, text_88, text_89, text_90, text_91, amount_0, amount_1, amount_2, amount_3, amount_4, amount_5, amount_6, amount_7, dxt$order_1]\nPhysical plan:\nProjectionExec: expr=[text_0@0 as text_0, text_1@1 as text_1]\n  CooperativeExec\n    DxtranSource: id=data, format=Parquet\n\n"
+  },
+  "runs": [
+    {
+      "case": "parquet_100_select_2_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.2009064859994396,
+      "user_s": 0.11,
+      "system_s": 0.05,
+      "max_rss_kib": 106944,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_100_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.01882592900074087,
+      "user_s": 0.0,
+      "system_s": 0.0,
+      "max_rss_kib": 52588,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_100_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.5669004780011164,
+      "user_s": 0.33,
+      "system_s": 0.1,
+      "max_rss_kib": 107112,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_100_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.8494178589990042,
+      "user_s": 0.4,
+      "system_s": 0.29,
+      "max_rss_kib": 250004,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_1000_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.06300434100012353,
+      "user_s": 0.03,
+      "system_s": 0.01,
+      "max_rss_kib": 56032,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_1000_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.07206436199885502,
+      "user_s": 0.05,
+      "system_s": 0.0,
+      "max_rss_kib": 55588,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_1_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.4484857040006318,
+      "user_s": 0.25,
+      "system_s": 0.04,
+      "max_rss_kib": 79676,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_3_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.39759255799981474,
+      "user_s": 0.3,
+      "system_s": 0.03,
+      "max_rss_kib": 68000,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_2_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.16128533400114975,
+      "user_s": 0.17,
+      "system_s": 0.13,
+      "max_rss_kib": 193236,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_100_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.016629630999887013,
+      "user_s": 0.0,
+      "system_s": 0.0,
+      "max_rss_kib": 52560,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_1_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.3046339430002263,
+      "user_s": 0.22,
+      "system_s": 0.04,
+      "max_rss_kib": 65956,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_3_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.2679203560001042,
+      "user_s": 0.21,
+      "system_s": 0.03,
+      "max_rss_kib": 69736,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_3_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.3667547690001811,
+      "user_s": 0.3,
+      "system_s": 0.04,
+      "max_rss_kib": 81172,
+      "output_verified": true
+    },
+    {
+      "case": "check_none_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.10202851800022472,
+      "user_s": 0.03,
+      "system_s": 0.04,
+      "max_rss_kib": 64308,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_1_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.1524622590004583,
+      "user_s": 0.14,
+      "system_s": 0.03,
+      "max_rss_kib": 68508,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_3_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.25398950000089826,
+      "user_s": 0.21,
+      "system_s": 0.02,
+      "max_rss_kib": 67308,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_1_threads_1",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.19329199099956895,
+      "user_s": 0.14,
+      "system_s": 0.03,
+      "max_rss_kib": 66888,
+      "output_verified": true
+    },
+    {
+      "case": "check_none_threads_4",
+      "phase": "warmup",
+      "repetition": 1,
+      "wall_s": 0.07222392599942395,
+      "user_s": 0.07,
+      "system_s": 0.06,
+      "max_rss_kib": 82776,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_1_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.18256283199843892,
+      "user_s": 0.14,
+      "system_s": 0.02,
+      "max_rss_kib": 65008,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_100_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.018206295999334543,
+      "user_s": 0.0,
+      "system_s": 0.0,
+      "max_rss_kib": 52644,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_3_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.33558501200059254,
+      "user_s": 0.29,
+      "system_s": 0.05,
+      "max_rss_kib": 81404,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_3_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.2236457929993776,
+      "user_s": 0.22,
+      "system_s": 0.04,
+      "max_rss_kib": 69672,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_1000_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.08062914699985413,
+      "user_s": 0.05,
+      "system_s": 0.01,
+      "max_rss_kib": 55528,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_1000_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.07264635400133557,
+      "user_s": 0.05,
+      "system_s": 0.01,
+      "max_rss_kib": 55752,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_1_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.2741224670007796,
+      "user_s": 0.23,
+      "system_s": 0.02,
+      "max_rss_kib": 65492,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_1_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.28562556900033087,
+      "user_s": 0.22,
+      "system_s": 0.05,
+      "max_rss_kib": 79708,
+      "output_verified": true
+    },
+    {
+      "case": "check_none_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.07412643600036972,
+      "user_s": 0.05,
+      "system_s": 0.06,
+      "max_rss_kib": 83260,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_100_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.01714500600064639,
+      "user_s": 0.0,
+      "system_s": 0.0,
+      "max_rss_kib": 52636,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_3_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.39122446900000796,
+      "user_s": 0.3,
+      "system_s": 0.03,
+      "max_rss_kib": 67888,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_2_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.13012291500126594,
+      "user_s": 0.14,
+      "system_s": 0.15,
+      "max_rss_kib": 191336,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_2_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.22130956099863397,
+      "user_s": 0.12,
+      "system_s": 0.04,
+      "max_rss_kib": 105036,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_100_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.6908070440003939,
+      "user_s": 0.42,
+      "system_s": 0.22,
+      "max_rss_kib": 215048,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_1_threads_4",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.31941247999930056,
+      "user_s": 0.14,
+      "system_s": 0.06,
+      "max_rss_kib": 67856,
+      "output_verified": true
+    },
+    {
+      "case": "check_none_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.20988991299964255,
+      "user_s": 0.06,
+      "system_s": 0.02,
+      "max_rss_kib": 64052,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_100_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.850015183999858,
+      "user_s": 0.31,
+      "system_s": 0.1,
+      "max_rss_kib": 107016,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_3_threads_1",
+      "phase": "measured",
+      "repetition": 1,
+      "wall_s": 0.285743463999097,
+      "user_s": 0.2,
+      "system_s": 0.03,
+      "max_rss_kib": 67920,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_1_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.288419979999162,
+      "user_s": 0.24,
+      "system_s": 0.04,
+      "max_rss_kib": 80260,
+      "output_verified": true
+    },
+    {
+      "case": "check_none_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.1058798799986107,
+      "user_s": 0.05,
+      "system_s": 0.02,
+      "max_rss_kib": 63248,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_3_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.39180557199870236,
+      "user_s": 0.3,
+      "system_s": 0.04,
+      "max_rss_kib": 67948,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_100_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.6919756520001101,
+      "user_s": 0.31,
+      "system_s": 0.1,
+      "max_rss_kib": 106636,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_100_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 1.1839074389990856,
+      "user_s": 0.38,
+      "system_s": 0.28,
+      "max_rss_kib": 232892,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_1_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.18575634700027877,
+      "user_s": 0.15,
+      "system_s": 0.03,
+      "max_rss_kib": 68984,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_3_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.22589281699947605,
+      "user_s": 0.22,
+      "system_s": 0.02,
+      "max_rss_kib": 69700,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_100_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.018576595999547862,
+      "user_s": 0.0,
+      "system_s": 0.0,
+      "max_rss_kib": 52048,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_3_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.2520681109999714,
+      "user_s": 0.2,
+      "system_s": 0.03,
+      "max_rss_kib": 65884,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_3_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.33469320900076127,
+      "user_s": 0.29,
+      "system_s": 0.05,
+      "max_rss_kib": 81188,
+      "output_verified": true
+    },
+    {
+      "case": "check_none_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.0569702539996797,
+      "user_s": 0.07,
+      "system_s": 0.03,
+      "max_rss_kib": 81436,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_1_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.27224365399888484,
+      "user_s": 0.22,
+      "system_s": 0.02,
+      "max_rss_kib": 66704,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_1000_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.06334400400010054,
+      "user_s": 0.04,
+      "system_s": 0.01,
+      "max_rss_kib": 56712,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_2_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.19264284199925896,
+      "user_s": 0.1,
+      "system_s": 0.06,
+      "max_rss_kib": 105720,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_100_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.0167165249986283,
+      "user_s": 0.01,
+      "system_s": 0.0,
+      "max_rss_kib": 51928,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_1_threads_1",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.20910522899976058,
+      "user_s": 0.16,
+      "system_s": 0.01,
+      "max_rss_kib": 65728,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_1000_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.07213818899981561,
+      "user_s": 0.05,
+      "system_s": 0.0,
+      "max_rss_kib": 56408,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_2_threads_4",
+      "phase": "measured",
+      "repetition": 2,
+      "wall_s": 0.10475215099904744,
+      "user_s": 0.13,
+      "system_s": 0.12,
+      "max_rss_kib": 193188,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_3_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.2699237680008082,
+      "user_s": 0.21,
+      "system_s": 0.02,
+      "max_rss_kib": 67924,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_100_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.016659261000313563,
+      "user_s": 0.0,
+      "system_s": 0.0,
+      "max_rss_kib": 52704,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_1000_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.070533116999286,
+      "user_s": 0.04,
+      "system_s": 0.01,
+      "max_rss_kib": 56964,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_1000_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.07153246499910892,
+      "user_s": 0.05,
+      "system_s": 0.0,
+      "max_rss_kib": 56236,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_2_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.11225816499973007,
+      "user_s": 0.11,
+      "system_s": 0.13,
+      "max_rss_kib": 194104,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_3_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.22140024500004074,
+      "user_s": 0.19,
+      "system_s": 0.03,
+      "max_rss_kib": 70256,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_2_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.19096796399935556,
+      "user_s": 0.11,
+      "system_s": 0.04,
+      "max_rss_kib": 107064,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_1_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.16340191400013282,
+      "user_s": 0.15,
+      "system_s": 0.02,
+      "max_rss_kib": 68100,
+      "output_verified": true
+    },
+    {
+      "case": "check_input_1_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.2026965900004143,
+      "user_s": 0.15,
+      "system_s": 0.01,
+      "max_rss_kib": 66920,
+      "output_verified": true
+    },
+    {
+      "case": "plan_independent_100_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.018476048000593437,
+      "user_s": 0.0,
+      "system_s": 0.01,
+      "max_rss_kib": 51756,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_3_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.36248559600062435,
+      "user_s": 0.31,
+      "system_s": 0.04,
+      "max_rss_kib": 81136,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_3_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.49565895599880605,
+      "user_s": 0.33,
+      "system_s": 0.05,
+      "max_rss_kib": 68140,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_100_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.43380063099903055,
+      "user_s": 0.37,
+      "system_s": 0.2,
+      "max_rss_kib": 205412,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_1_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.28891067299991846,
+      "user_s": 0.23,
+      "system_s": 0.03,
+      "max_rss_kib": 80860,
+      "output_verified": true
+    },
+    {
+      "case": "check_none_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.09534799399989424,
+      "user_s": 0.04,
+      "system_s": 0.03,
+      "max_rss_kib": 64380,
+      "output_verified": true
+    },
+    {
+      "case": "check_output_1_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.30942298300033144,
+      "user_s": 0.22,
+      "system_s": 0.04,
+      "max_rss_kib": 64860,
+      "output_verified": true
+    },
+    {
+      "case": "check_none_threads_4",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.07508832200073812,
+      "user_s": 0.07,
+      "system_s": 0.05,
+      "max_rss_kib": 91968,
+      "output_verified": true
+    },
+    {
+      "case": "parquet_100_select_100_threads_1",
+      "phase": "measured",
+      "repetition": 3,
+      "wall_s": 0.4668438190001325,
+      "user_s": 0.28,
+      "system_s": 0.12,
+      "max_rss_kib": 106288,
+      "output_verified": true
+    }
+  ],
+  "summary": {
+    "check_none_threads_1": {
+      "median_s": 0.1058798799986107,
+      "min_s": 0.09534799399989424,
+      "max_s": 0.20988991299964255,
+      "median_cpu_s": 0.07,
+      "median_rss_mib": 62.55078125,
+      "rows_s": 618965.5674039291
+    },
+    "check_none_threads_4": {
+      "median_s": 0.07412643600036972,
+      "min_s": 0.0569702539996797,
+      "max_s": 0.07508832200073812,
+      "median_cpu_s": 0.11,
+      "median_rss_mib": 81.30859375,
+      "rows_s": 884111.034283007
+    },
+    "check_input_1_threads_1": {
+      "median_s": 0.2026965900004143,
+      "min_s": 0.18256283199843892,
+      "max_s": 0.20910522899976058,
+      "median_cpu_s": 0.16,
+      "median_rss_mib": 64.1875,
+      "rows_s": 323320.68339120084
+    },
+    "check_input_1_threads_4": {
+      "median_s": 0.18575634700027877,
+      "min_s": 0.16340191400013282,
+      "max_s": 0.31941247999930056,
+      "median_cpu_s": 0.18,
+      "median_rss_mib": 66.50390625,
+      "rows_s": 352806.2489294196
+    },
+    "check_input_3_threads_1": {
+      "median_s": 0.2699237680008082,
+      "min_s": 0.2520681109999714,
+      "max_s": 0.285743463999097,
+      "median_cpu_s": 0.23,
+      "median_rss_mib": 66.328125,
+      "rows_s": 242794.47669759774
+    },
+    "check_input_3_threads_4": {
+      "median_s": 0.2236457929993776,
+      "min_s": 0.22140024500004074,
+      "max_s": 0.22589281699947605,
+      "median_cpu_s": 0.24,
+      "median_rss_mib": 68.06640625,
+      "rows_s": 293034.7990055077
+    },
+    "check_output_1_threads_1": {
+      "median_s": 0.2741224670007796,
+      "min_s": 0.27224365399888484,
+      "max_s": 0.30942298300033144,
+      "median_cpu_s": 0.25,
+      "median_rss_mib": 63.95703125,
+      "rows_s": 239075.62454489956
+    },
+    "check_output_1_threads_4": {
+      "median_s": 0.288419979999162,
+      "min_s": 0.28562556900033087,
+      "max_s": 0.28891067299991846,
+      "median_cpu_s": 0.27,
+      "median_rss_mib": 78.37890625,
+      "rows_s": 227224.2027067279
+    },
+    "check_output_3_threads_1": {
+      "median_s": 0.39180557199870236,
+      "min_s": 0.39122446900000796,
+      "max_s": 0.49565895599880605,
+      "median_cpu_s": 0.33999999999999997,
+      "median_rss_mib": 66.35546875,
+      "rows_s": 167266.6360146023
+    },
+    "check_output_3_threads_4": {
+      "median_s": 0.33558501200059254,
+      "min_s": 0.33469320900076127,
+      "max_s": 0.36248559600062435,
+      "median_cpu_s": 0.33999999999999997,
+      "median_rss_mib": 79.28515625,
+      "rows_s": 195288.81701035053
+    },
+    "parquet_100_select_100_threads_1": {
+      "median_s": 0.6919756520001101,
+      "min_s": 0.4668438190001325,
+      "max_s": 0.850015183999858,
+      "median_cpu_s": 0.41000000000000003,
+      "median_rss_mib": 104.13671875,
+      "rows_s": 94708.53462917735
+    },
+    "parquet_100_select_100_threads_4": {
+      "median_s": 0.6908070440003939,
+      "min_s": 0.43380063099903055,
+      "max_s": 1.1839074389990856,
+      "median_cpu_s": 0.64,
+      "median_rss_mib": 210.0078125,
+      "rows_s": 94868.74890633371
+    },
+    "parquet_100_select_2_threads_1": {
+      "median_s": 0.19264284199925896,
+      "min_s": 0.19096796399935556,
+      "max_s": 0.22130956099863397,
+      "median_cpu_s": 0.16,
+      "median_rss_mib": 103.2421875,
+      "rows_s": 340194.3166943732
+    },
+    "parquet_100_select_2_threads_4": {
+      "median_s": 0.11225816499973007,
+      "min_s": 0.10475215099904744,
+      "max_s": 0.13012291500126594,
+      "median_cpu_s": 0.25,
+      "median_rss_mib": 188.66015625,
+      "rows_s": 583797.1785852511
+    },
+    "plan_independent_100_threads_1": {
+      "median_s": 0.018476048000593437,
+      "min_s": 0.018206295999334543,
+      "max_s": 0.018576595999547862,
+      "median_cpu_s": 0.0,
+      "median_rss_mib": 50.828125,
+      "rows_s": null
+    },
+    "plan_independent_100_threads_4": {
+      "median_s": 0.0167165249986283,
+      "min_s": 0.016659261000313563,
+      "max_s": 0.01714500600064639,
+      "median_cpu_s": 0.0,
+      "median_rss_mib": 51.40234375,
+      "rows_s": null
+    },
+    "plan_independent_1000_threads_1": {
+      "median_s": 0.070533116999286,
+      "min_s": 0.06334400400010054,
+      "max_s": 0.08062914699985413,
+      "median_cpu_s": 0.05,
+      "median_rss_mib": 55.3828125,
+      "rows_s": null
+    },
+    "plan_independent_1000_threads_4": {
+      "median_s": 0.07213818899981561,
+      "min_s": 0.07153246499910892,
+      "max_s": 0.07264635400133557,
+      "median_cpu_s": 0.05,
+      "median_rss_mib": 54.91796875,
+      "rows_s": null
+    }
+  },
+  "oracles": {
+    "check_none_threads_1": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_none_threads_4": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_input_1_threads_1": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_input_1_threads_4": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_input_3_threads_1": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_input_3_threads_4": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_output_1_threads_1": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_output_1_threads_4": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_output_3_threads_1": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "check_output_3_threads_4": {
+      "bytes": 16777216,
+      "sha256": "9d0eddf9f06fadec082287de6c202da9a8214e070c8d13584a4e9f29ce16e11b",
+      "rows": 65536
+    },
+    "parquet_100_select_100_threads_1": {
+      "bytes": 104857600,
+      "sha256": "7905b5f4cb6d86ebefbb98cb3d906fe31ff4da731a7c0d02700b15b0af99493b",
+      "rows": 65536
+    },
+    "parquet_100_select_100_threads_4": {
+      "bytes": 104857600,
+      "sha256": "7905b5f4cb6d86ebefbb98cb3d906fe31ff4da731a7c0d02700b15b0af99493b",
+      "rows": 65536
+    },
+    "parquet_100_select_2_threads_1": {
+      "bytes": 2097152,
+      "sha256": "af0057db9eafc39b0aa78d66429913dfa86fc2621702368906ea90c7c87ff1fd",
+      "rows": 65536
+    },
+    "parquet_100_select_2_threads_4": {
+      "bytes": 2097152,
+      "sha256": "af0057db9eafc39b0aa78d66429913dfa86fc2621702368906ea90c7c87ff1fd",
+      "rows": 65536
+    }
+  }
+}

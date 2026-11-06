@@ -1,0 +1,25 @@
+input:
+  - id: labels
+    format: csv
+    path: data/labels.csv
+    encoding: utf-8
+    fields: [{name: encoding}, {name: label}]
+process:
+  - id: encoded
+    sql: SELECT encoding, icu_encode(label, encoding) AS label FROM labels
+  - id: trimmed
+    sql: >-
+      SELECT encoding, icu_length(label, encoding) AS original_bytes,
+             icu_trim(label, encoding, '　') AS label FROM encoded
+output:
+  - id: result
+    format: csv
+    path: out/fullwidth.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: >-
+      SELECT encoding, original_bytes,
+             icu_decode(label, encoding) AS trimmed,
+             icu_decode(icu_rpad(label, encoding, 12, '　'), encoding) AS padded,
+             icu_length(icu_rpad(label, encoding, 12, '　'), encoding) AS padded_bytes
+      FROM trimmed

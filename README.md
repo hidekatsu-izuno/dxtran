@@ -1,6 +1,6 @@
 # dxtran
 
-`dxt` は、YAML に定義した CSV・固定長・RDW・Parquet ファイルを Apache DataFusion SQL で変換する Rust 製 CLI です。設計仕様は [docs/SPEC.md](docs/SPEC.md) にあります。
+`dxt` は、YAML に定義した CSV・固定長・行順編成（lines）・RDW・Parquet ファイルを Apache DataFusion SQL で変換する Rust 製 CLI です。設計仕様は [docs/SPEC.md](docs/SPEC.md) にあります。
 
 ```sh
 cargo build --locked --release
@@ -17,7 +17,13 @@ cargo run -- run examples/basic/job.yml --threads 4 --memory-limit 512MiB
 dxt run job.yml --input.sales.path=sales.csv --output.totals.path=totals.csv
 ```
 
-固定長・CSV の各組み合わせ、文字コード、全23型、読み戻し、異常系のサンプルと一括検証手順は [examples/README.md](examples/README.md) を参照してください。
+ジョブ直下の `exit_codes: {"2": 8, "3": 12, "4": 16, "5": 20}` で、CLIが返す終了コードを置き換えられます。キーは既定コードの文字列、値は0〜255の整数です。未指定のコードはそのまま返し、終了ログには置換前の `original_exit_code` と置換後の `exit_code` を記録します。[適用範囲と規則](docs/SPEC.md#141-終了コードの置換)、[正常終了・入力／出力エラーのサンプル](examples/exit_codes/job.yml)を参照してください。
+
+固定長・CSV の各組み合わせ、文字コード、24型、読み戻し、異常系のサンプルと一括検証手順は [examples/README.md](examples/README.md) を参照してください。
+
+`format: lines` は COBOL の LINE SEQUENTIAL に対応する行単位の形式です。`fields` でバイト位置・幅を定義し、短い入力行は半角空白でレイアウト幅まで補完します。空行も1レコードとし、最終行の改行省略を認めます。`lines.line_ending` は `lf`（既定）/ `crlf`、出力の末尾空白は既定で除去し、`lines.trim_trailing_spaces: false` で保持できます。幅超過や項目内の改行はエラーです。文字項目・bstring・FILLER、UTF-16 等の文字コード、gzip / zstd に対応します。[仕様](docs/SPEC.md#631-lines-の境界と空白補完)と[短い行・空行・読み戻しのサンプル](examples/lines/job.yml)を参照してください。
+
+`format: rdw` は `rdw: {bdw: true, spanned: true}` でBDW付きのspannedレコードを読み書きできます。両フラグは独立した真偽値で、既定はともに `false` です。BDW内のRDW / SDWを検証し、分割された本体は結合してから項目を解析します。出力ではブロックへの格納・必要な分割・最終ブロックの書き出しを行います。通常BDWに対応し、extended BDWは対象外です。[4通りの設定と長さの定義](docs/SPEC.md#64-rdw-の境界と可変長項目)、[変換・読み戻しのサンプル](examples/rdw_framing/job.yml)を参照してください。
 
 `format: lua` で LuaJIT のプラグインを外部テーブルとして定義し、データベース等のデータを SQL から参照できます。出力では `mode: append`（追記）・`overwrite`（全件置換）・`merge`（キーによる UPSERT）を指定できます。共有ライブラリは `LD_LIBRARY_PATH` 等による検索と直接パス指定に対応します。[外部テーブル API](docs/LUA_PLUGINS.md) と、[SQLite の JOIN・集計・書き込みサンプル](examples/sqlite/README.md)を用意しています。
 
@@ -48,11 +54,37 @@ SELECT cobol_to_char(123.45, '$$$$9.99');     -- ' $123.45'
 SELECT cobol_to_char(123.45, '9(5)V99');      -- '0012345'
 ```
 
-CSV・fixed・RDW の入力定義は全列の名前・型を指定します。CSV の未引用の空フィールドは NULL、引用した空フィールドは空文字です。`output.fields` の部分指定では SQL の列順を保ったまま書式を設定できます。fixed / RDW は全物理項目を定義し、隙間は名前のない FILLER で明示します。23種類の型、文字コード、ビット列、日時パターン、NULL 表現を共通のレイアウトで処理します。
+CSV・fixed・RDW の入力定義は全列の名前・型を指定します。CSV の未引用の空フィールドは NULL、引用した空フィールドは空文字です。`output.fields` の部分指定では SQL の列順を保ったまま書式を設定できます。fixed / RDW は全物理項目を定義し、隙間は名前のない FILLER で明示します。24種類の型、文字コード、ビット列、日時パターン、NULL 表現を共通のレイアウトで処理します。
 
-文字項目の `input.fields` / `output.fields` には `trim: false | left | right | both` を指定できます。`false` は保持、`left` は先頭、`right` は末尾、`both` は両端の空白を除去します。fixed / RDW で `pad_char` を指定した場合はその文字が対象です。固定幅出力では trim 後に項目幅まで再度埋めます。例えば長さ5・`trim: both` の項目に `"  A  "` を出力すると `"A    "` になります。[省略時の動作と詳細](docs/SPEC.md#74-文字項目日付時刻binarybits)を参照してください。
+ゾーン / パック10進数に加え、バイナリ整数型 `int-le` / `int-be` / `uint-le` / `uint-be` にも `scale` を指定できます。格納整数123は `scale: 2` で1.23、`scale: -3` で123000、`precision: 3, scale: 6` で0.000123となり、COBOL の `V` と両側の `P` に対応します。scale を指定したバイナリ整数は SQL で Decimal として扱い、指定を省略すれば従来の整数型になります。[設定例と桁数の規則](docs/SPEC.md#73-type-の一覧)を参照してください。
 
-`encoding` は従来の UTF-8・CP932 等に加え、[jtc-utils](https://docs.rs/jtc-utils/0.1.0/jtc_utils/charset/) の `jef`、`x-fujitsu-ebcdic-ascii`、`x-fujitsu-ebcdic-kana`、`x-fujitsu-ebcdic-lower`、`cp930`、`cp939`、`cp942`、`cp942c`、`cp943c` に対応します。例えば IBM の漢字混在データは `encoding: cp939` と指定します。JEF は2バイトの漢字コード専用で、固定長・RDW の文字項目の埋め文字には `pad_char: "　"` を指定してください。CP930 / CP939 の文字項目は SO/SI を含む独立した文字列として扱い、`length` はシフト制御バイトを含むバイト数です。不正なバイト列と変換不能文字はエラーになります。[文字コードの詳細](docs/SPEC.md#65-encoding-の解決と文字コード変換)を参照してください。
+fixed / RDW の `type: bstring` は元のバイト列を保持し、SQL には Binary として渡します。`length` はバイト数です。`space_char`（既定は半角空白）を `encoding` で変換したバイト列で trim・幅埋めを行い、本体はデコードしません。入力の既定 trim は固定幅で `right`、`length: rest` で `false` です。`trim: false` なら元の埋め文字も保持します。EBCDIC の項目をそのまま `ORDER BY` するとバイト順になります。[バイト保持・ソート・JOIN・読み戻しのサンプル](examples/bstring/job.yml)を用意しています。
+
+`icu_decode(binary, encoding [, length [, space_char]])` は文字列へ、`icu_encode(text, encoding [, length [, space_char]])` はバイナリへ変換します。任意の `length` は指定文字コード上のバイト数で、不足分を右側に埋め、超過はエラーにします。空白は保持します。DataFusion 標準の Binary と文字列の比較では文字列側が UTF-8 バイト列へ変換されるため、異なる文字コードの文字を照合する場合は明示的に変換してください。[引数と制限](docs/SPEC.md#103-文字列とバイナリの文字コード変換)を参照してください。
+
+```sql
+SELECT icu_decode(code, 'cp939') AS code FROM mainframe;
+SELECT * FROM mainframe m JOIN customers c
+  ON m.code = icu_encode(c.code, 'cp939');
+SELECT icu_encode('あ', 'cp932', 4); -- X'82A02020'（4バイト）
+```
+
+文字コードを指定する文字列関数として `icu_length`、`icu_substr`、`icu_left` / `icu_right`、`icu_trim` / `icu_ltrim` / `icu_rtrim`、`icu_lpad` / `icu_rpad`、`icu_upper` / `icu_lower`、検索・置換・繰り返しを使えます。第2引数は文字コード、長さ・位置はバイト単位です。Binary は元バイトを使い、文字列引数は指定コードへ変換します。バイト列を返す関数の戻り値は Binary です。[全関数と引数](docs/SPEC.md#104-文字コードを指定する文字列関数)を参照してください。
+
+```sql
+SELECT icu_rtrim(code, 'cp939');
+SELECT icu_rpad(code, 'cp939', 10);
+SELECT icu_length('あ', 'cp932');         -- 2
+SELECT icu_substr('あい', 'cp932', 3, 2); -- X'82A2'
+SELECT icu_decode(icu_trim(icu_encode('　日本　', 'cp932'), 'cp932', '　'), 'cp932');
+-- 日本
+```
+
+全角空白は `pattern` に `'　'` を指定します。CP932・JEF・UTF-16LE / BE の2バイト単位に加え、CP930 / CP939 / ISO-2022-JP のシフト状態も処理します。[全角空白の trim・幅埋めのサンプル](examples/bstring/fullwidth.yml)を用意しています。padding は長さ超過や埋めきれない幅をエラーにし、切り詰めません。
+
+文字項目の `input.fields` / `output.fields` には `trim: false | left | right | both` を指定できます。`false` は保持、`left` は先頭、`right` は末尾、`both` は両端の空白を除去します。`space_char` で指定した文字が対象です。固定幅出力では trim 後に項目幅まで再度埋めます。例えば長さ5・`trim: both` の項目に `"  A  "` を出力すると `"A    "` になります。[省略時の動作と詳細](docs/SPEC.md#74-文字項目日付時刻binarybits)を参照してください。
+
+`encoding` は従来の UTF-8・CP932 等に加え、[jtc-utils](https://docs.rs/jtc-utils/0.2.1/jtc_utils/charset/) の `jef`、`x-fujitsu-ebcdic-ascii`、`x-fujitsu-ebcdic-kana`、`x-fujitsu-ebcdic-lower`、`cp930`、`cp939`、`cp942`、`cp942c`、`cp943c` に対応します。例えば IBM の漢字混在データは `encoding: cp939` と指定します。JEF は2バイトの漢字コード専用で、固定長・RDW の文字項目の埋め文字には `space_char: "　"` を指定してください。CP930 / CP939 の文字項目は SO/SI を含む独立した文字列として扱い、`length` はシフト制御バイトを含むバイト数です。不正なバイト列と変換不能文字はエラーになります。[文字コードの詳細](docs/SPEC.md#65-encoding-の解決と文字コード変換)を参照してください。
 
 fixed / RDW の input/output では、項目に `when: "record_type = 'H'"` のような Boolean の SQL 式を指定し、レコード条件に応じて同じバイト領域を別の項目として扱えます。入力の条件式は `when` のない共通項目、出力の条件式は SQL の結果列を参照します。条件が TRUE の項目だけを読み書きし、非該当の入力列は NULL になります。`AND` / `OR` / `IN` / `IS NULL` やスカラー関数も利用できます。[ヘッダー・明細・トレーラーのサンプル](examples/conditional_records/job.yml)と[詳しい規則](docs/SPEC.md#711-レコード条件付き項目定義)を参照してください。
 

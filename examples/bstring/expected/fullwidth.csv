@@ -1,0 +1,8 @@
+encoding,original_bytes,trimmed,padded,padded_bytes
+cp932,8,日本,日本　　　　,12
+jef,8,日本,日本　　　　,12
+utf-16le,8,日本,日本　　　　,12
+utf-16be,8,日本,日本　　　　,12
+cp930,10,日本,日本　　　,12
+cp939,10,日本,日本　　　,12
+iso-2022-jp,14,日本,日本　,12

@@ -1,6 +1,6 @@
 # dxtran 設計仕様書
 
-状態: 初期設計案 / 仕様版: 0.19 / 作成日: 2026-10-22 / 更新日: 2026-10-28
+状態: 初期設計案 / 仕様版: 0.21 / 作成日: 2026-10-22 / 更新日: 2026-10-29
 
 ## 1. 目的と設計上の前提
 
@@ -22,15 +22,15 @@ dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長、
 | 定義の再利用 | 任意の枝への `import` と利用側の値による上書き |
 | 行順 | 元ファイル順を既定とし、SQL の ORDER BY で変更可能 |
 | 文字コード | encoding_rs と jtc-utils が認識する全ラベル・別名。明示指定し、自動判定しない |
-| レコードの境界 | 固定長は改行なし / LF / CRLF、可変長は RDW。幅・位置はすべてバイト単位 |
+| レコードの境界 | 固定長は改行なし / LF / CRLF、lines は行区切り、可変長は RDW。RDW は BDW と spanned を個別指定可能。幅・位置はすべてバイト単位 |
 | 項目の格納形式 | `type` に文字列・10進数・整数・IEEE / IBM HFP・ゾーン / パック10進数・真偽値・日付時刻・バイト列を指定 |
 | ビット項目 | n バイトの `bits` を読み、各ビットを名前付き Boolean 列として公開 |
-| 文字の幅埋め | `pad_char` で Unicode 1文字を指定。既定は U+0020、U+3000 等も指定可能 |
+| 文字の幅埋め | `space_char` で Unicode 1文字を指定。既定は U+0020、U+3000 等も指定可能 |
 | CSV の項目別クォート | `output.fields` の各項目で `quote_style` を指定。`csv.quote_style` は共通の既定値。NULL と空文字の区別を維持 |
 | NULL 出力 | fixed は型別の既定値で補完する。文字・日時等は空白、数値は0、binary はゼロバイト、bits の NULL 子は false。rdw は明示した NULL 表現を使用可能 |
 | 実行 | 設定検証、SQL 計画の表示、ストリーム実行、実行結果の記録 |
 
-BDW、spanned record、gzip / zstd / Parquet 内部の圧縮以外の圧縮ファイル、組み込みのリモートストレージ、分散実行は後続の拡張対象とする。信頼済み LuaJIT プラグインから外部サービス・ライブラリへ接続できる。copybook の取り込み・解析は対象に含めない。
+extended BDW、gzip / zstd / Parquet 内部の圧縮以外の圧縮ファイル、組み込みのリモートストレージ、分散実行は後続の拡張対象とする。信頼済み LuaJIT プラグインから外部サービス・ライブラリへ接続できる。copybook の取り込み・解析は対象に含めない。
 
 ## 3. 全体構成
 
@@ -41,12 +41,12 @@ flowchart LR
     I --> V[構文・参照・型の検証]
     I --> L[共通レイアウト]
     V --> P[依存グラフ・SQL 計画]
-    L --> R[CSV / fixed / rdw / parquet Reader]
+    L --> R[CSV / fixed / lines / rdw / parquet Reader]
     R --> A[Arrow RecordBatch]
     A --> D[DataFusion]
     P --> D
     D --> S[指定順または元ファイル順の確定]
-    S --> W[CSV / fixed / rdw / parquet Writer]
+    S --> W[CSV / fixed / lines / rdw / parquet Writer]
     L --> W
     W --> T[tmp フォルダ内の出力用一時ファイル]
     T -->|rename / replace| O[最終ファイルへ公開]
@@ -64,7 +64,7 @@ process: []
 output: []
 ```
 
-- import 展開後の最上位で使えるキーは `input`、`process`、`output`、任意の `lua` とする。入出力・process は配列で、`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。ジョブ直下の `lua` は共有変数と任意の開始・終了処理を指定するマップである。
+- import 展開後の最上位で使えるキーは `input`、`process`、`output`、任意の `lua` / `exit_codes` とする。入出力・process は配列で、`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。ジョブ直下の `lua` は共有変数と任意の開始・終了処理、`exit_codes` は14.1節の終了コード置換を指定するマップである。
 - 各 output は `sql` を必須とする。`process` を省略した場合や `process: []` でも、`output.sql` に編集・結合・集計を書ける。単純な形式変換も `SELECT * FROM sales` 等の SQL で入力を指定する。
 - 項目定義は形式共通で input / output 直下の `fields` に置く。CSV の共通設定は `csv`、fixed のレコード設定は `fixed`、RDW の共通設定は `rdw` にまとめる。
 - 各定義に `id` を付ける。`input` と `process` の ID は同じ SQL テーブル名の名前空間を共有し、重複を禁止する。出力 ID は出力内で一意とする。
@@ -176,14 +176,15 @@ output:
 | キー | 必須 | 意味 |
 | --- | --- | --- |
 | `id` | 必須 | SQL から参照するテーブル名 |
-| `format` | 必須 | `csv`、`fixed`、`rdw`、`parquet`、`lua` |
+| `format` | 必須 | `csv`、`fixed`、`lines`、`rdw`、`parquet`、`lua` |
 | `path` | 任意 | 入力ファイルのパス。省略時は CLI の `--input.<id>.path` で指定する |
-| `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。省略時は非圧縮。6.7節参照 |
+| `compression` | 任意 | CSV / fixed / lines / rdw のファイル全体の `gzip` / `zstd` 圧縮。省略時は非圧縮。6.7節参照 |
 | `encoding` | parquet / lua 以外で必須 | encoding_rs と jtc-utils が認識する文字コードラベル。6.5節参照。parquet / lua では指定不可 |
-| `fields` | parquet 以外で必須 | CSV は列名・type・NULL 許容、fixed / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
+| `fields` | parquet 以外で必須 | CSV は列名・type・NULL 許容、fixed / lines / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
 | `check` | 任意 | レコード条件による異常終了・ログ出力。6.8節参照 |
 | `csv` | CSV で任意 | ヘッダー・区切り・引用符の設定 |
 | `fixed` | fixed で必須 | record_separator と、任意の record_length |
+| `lines` | lines で任意 | line_ending、record_length、trim_trailing_spaces。6.3.1節参照 |
 | `rdw` | rdw で任意 | RDW の最大レコード長等の設定 |
 
 形式に合わないキーはエラーとする。存在しないファイル、読み取り不能、ディレクトリの指定もエラーとする。空ファイルは0行のテーブルになる。ただしヘッダー必須の CSV はヘッダーのない空ファイルをエラーとする。Parquet の0行ファイルはスキーマとフッターを持つ必要があり、0バイトのファイルはエラーとする。
@@ -231,18 +232,71 @@ fixed 専用の設定は、input / output 直下の `fixed` にまとめる。`f
 
 バイト列を改行で分割しない。整数・浮動小数点・パック10進数の中に改行と同じバイトがあっても、レコード境界とは扱わない。レコード本体や末尾空白を一括で trim しない。
 
+### 6.3.1 lines の境界と空白補完
+
+`format: lines` は、COBOL の LINE SEQUENTIAL の基本となる、改行で区切った文字レコードを読み書きする。`fixed` と同じく `fields` の `offset` / `length` は文字コード変換前のバイト位置・幅であり、全物理領域を隙間なく定義する。レコード幅は項目の最大終端から導出する。
+
+| `lines` のキー | 既定値 | 意味 |
+| --- | --- | --- |
+| `line_ending` | `lf` | 入出力の行区切り。`lf` / `crlf`。指定 encoding でエンコードする |
+| `record_length` | 項目から導出 | 改行を除いた正のレイアウト幅。指定時は項目の最大終端と一致させる |
+| `trim_trailing_spaces` | `true` | 出力時、組み立て済みレコードの末尾にある U+0020 の空白だけを除去する。`false` なら幅全体を出力する。入力には影響しない |
+
+入力は指定した改行までを1レコードとして読み、改行を除去してから、短い行の右側に指定 encoding の U+0020 を補ってレイアウト幅にする。その後、項目の切り出し・trim・NULL 判定・型変換・check を適用する。空行は全体が空白の1レコード、空ファイルは0レコードとする。最終行の改行省略を認め、末尾改行から余分な空レコードを作らない。幅を超える行や不一致の改行は入力エラーとし、切り捨てや次レコードへの分割はしない。エラーのバイト位置は空白補完前の物理バイト数で数える。
+
+出力は各項目を固定幅で組み立ててから末尾空白を処理し、全レコードに指定した改行を付ける。全空白のレコードは既定で空行になる。NULL は fixed と同じ型別既定値で補完する。データ中の CR / LF は入出力エラーとし、CSV の引用やエスケープを行わない。FILLER の既定は指定 encoding の U+0020 とし、明示した `fill_byte` は生バイトとして扱う。
+
+使用できる型は `string` / `decimal` / `boolean` / `date` / `time` / `timestamp` / `bstring` と名前のない FILLER。項目別の trim・NULL 条件・日時書式、レコード条件 `when`、gzip / zstd を利用できる。`bstring` は本体をデコードせず、改行と衝突しない生バイト列として扱う。バイナリ数値・パック10進数・`binary` / `bits`、`length: rest` は指定できない。条件付きレイアウトも全レコードで最大幅を覆い、短い種別には FILLER を定義する。
+
+UTF-16LE / BE は2バイト単位で区切りを検出し、項目位置・幅も2の倍数とする。UTF-8・CP932・CP939・ISO-2022-JP 等も使用できる。各項目の文字コードの状態は fixed と同じく独立する。BOM の自動除去は行わない。CR・LF・U+0020 を表現できない JEF は指定できない。タブ展開、NUL による制御文字のエスケープ等の処理系固有動作は行わない。レイアウト幅とデコード後の1レコードは16 MiBまでとし、行全体を無制限に読み込まない。
+
+```yaml
+format: lines
+encoding: cp932
+lines: {line_ending: crlf, record_length: 12}
+fields:
+  - {name: code, length: 4}
+  - {name: label, length: 8}
+```
+
+全行がレイアウト幅ちょうどの改行付きファイルは `fixed` でも扱える。末尾空白が省略された LINE SEQUENTIAL の入力には `lines` を指定する。
+
 ### 6.4 rdw の境界と可変長項目
 
-`format: rdw` は、4バイトの Record Descriptor Word とレコード本体の繰り返しとして入出力する。RDW の先頭2バイトはビッグエンディアンの符号なし整数で、RDW 自身の4バイトを含む長さ `L`、後ろ2バイトは `00 00` とする。BDW や spanned record は扱わない。[IBM: Data set record formats](https://www.ibm.com/docs/en/zos-basic-skills?topic=set-data-record-formats)
+`format: rdw` は、4バイトの Record Descriptor Word とレコード本体を読み書きする。`rdw.bdw` と `rdw.spanned` をそれぞれ指定し、BDW付きVB、spannedレコードにも対応する。どちらも既定は `false` とし、既存のRDW列の動作を維持する。通常のRDWは、先頭2バイトが自身を含む長さ `L` のビッグエンディアン整数、後ろ2バイトが `00 00` である。[IBM: Data set record formats](https://www.ibm.com/docs/en/zos-basic-skills?topic=set-data-record-formats)
 
-- 入力は RDW を4バイト読み、`L - 4` バイトをレコード本体として読む。完全なレコードの間の EOF は正常終了、途中の RDW・本体の切断はエラー。
-- `rdw.max_record_length` は RDW 込みの上限で、既定値32,760、指定範囲4〜65,535とする。`L < 4`、上限超過、予約バイトが非ゼロの RDW はエラーにする。
+| `rdw` のキー | 既定値 | 意味 |
+| --- | --- | --- |
+| `bdw` | `false` | ブロック先頭にBDWがある形式を入出力する。真偽値のみ |
+| `spanned` | `false` | SDWの制御コードを解釈して論理レコードを結合し、出力では必要に応じて分割する。真偽値のみ |
+| `max_record_length` | 32,760 | 論理レコード本体＋4バイトの上限。通常は4〜65,535、spanned時は5〜16,777,220。spanned時の4バイトは論理RDW換算であり、断片ごとのSDWの合計ではない |
+| `max_block_length` | 32,760 | BDW自身を含むブロック長の上限。8〜32,760。`bdw: true` かつ `spanned: true` では9以上。`bdw: false` の入出力には影響しない |
+
+| `bdw` | `spanned` | ファイル上の構造 |
+| --- | --- | --- |
+| `false` | `false` | RDW＋本体の繰り返し |
+| `true` | `false` | BDW＋複数のRDW付きレコード。非spannedのVB |
+| `false` | `true` | BDWを持たないSDW付き断片の列 |
+| `true` | `true` | BDW＋複数のSDW付き断片。VBS |
+
+形式は設定で明示し、自動判別しない。同じバイト列がRDW列とBDW付きデータの両方として成立する場合がある。
+
+- 両フラグがfalseの場合、入力はRDWを4バイト読み、`L - 4` バイトをレコード本体として読む。完全なレコードの間のEOFは正常終了、途中のRDW・本体の切断はエラー。
+- `rdw.max_record_length` の超過や、予約バイトが非ゼロのRDWはエラーにする。通常RDWの本体長0は認める。spanned時は各SDWに1バイト以上の本体が必要で、本体長0の論理レコードを入出力しない。
 - `fields` の `offset: 0` は RDW を除いた本体の先頭。RDW のバイト順は、項目の `type` や `encoding` に影響されない。
 - fixed 用の設定は rdw では指定せず、境界は各 RDW で決める。`fixed` ブロックは CSV / rdw では設定エラーとする。
-- 最後の項目だけに `length: rest` を指定できる。その項目は `type: string` または `binary` とし、固定の先頭項目の後から本体末尾までを読む。長さ0は空文字または空のバイト列とし、NULL 条件を明示しなければ NULL にはしない。`max_length` で本体内の最大バイト長を追加制限できる。
+- 最後の項目だけに `length: rest` を指定できる。その項目は `type: string` / `binary` / `bstring` とし、固定の先頭項目の後から本体末尾までを読む。長さ0は空文字または空のバイト列とし、NULL 条件を明示しなければ NULL にはしない。`max_length` で本体内の最大バイト長を追加制限できる。
 - `rest` より前の必須領域が本体に収まらない場合はエラー。`rest` がないレイアウトでは各本体が定義の終端と完全一致する必要がある。
-- 出力は項目をエンコードして本体長を確定し、RDW を付ける。`rest` の文字列・バイト列は幅埋めせず、そのバイト数を使う。RDW と本体の後に改行を付けない。
-- レコードの元順は RDW の出現順とし、4バイトの RDW 自体を列として公開しない。
+- 出力は項目をエンコードして本体長を確定し、指定したRDW / SDW / BDWを付ける。`rest` の文字列・バイト列は幅埋めせず、そのバイト数を使う。レコードやブロックの後に改行を付けない。
+- レコードの元順は論理レコードの出現順とし、RDW / BDW / SDW自体は列として公開しない。spanned時も結合後の論理レコード1件を1行とし、record_noやcheckを断片単位では数えない。
+
+`bdw: true` では通常BDWの先頭2バイトから自身を含む長さを読み、残り2バイトはゼロを要求する。各RDW / SDWは宣言されたブロック内に完全に収まる必要があり、端数バイトや途中切断はエラーとする。空のブロックは認めない。非spannedの論理レコードは1ブロックに収まる必要があり、RDW込みの実効上限は `min(max_record_length, max_block_length - 4)`。出力は次のレコードが入らない時点で現在のブロックを書き出す。[IBM: Block descriptor word](https://www.ibm.com/docs/en/zos/2.5.0?topic=records-block-descriptor-word-bdw)
+
+`spanned: true` では、SDWの第3バイトを `00`（完全なレコード）、`01`（先頭）、`03`（中間）、`02`（末尾）として解釈し、その他の予約ビットと第4バイトはゼロを要求する。SDW込みの断片長は5〜32,756バイト。先頭のない中間・末尾、未完了の間の別レコード開始、未完了のままのEOFはエラーとする。結合後に項目を切り出し、文字コード変換・数値変換・NULL判定・when・checkを適用するため、文字や数値項目の途中で分割されたデータも扱う。[IBM: Segment descriptor word](https://www.ibm.com/docs/en/zos/3.1.0?topic=method-segment-descriptor-word)
+
+spanned出力では現在のブロックの残り領域に断片を詰め、SDWと1バイトの本体が入らなければ次のブロックを開始する。BDWなしの場合はSDW込み32,756バイトを上限として断片化する。最後の端数ブロックは正常終了時に書き出し、0行のファイルは0バイトとする。ブロック境界はArrowバッチやthreadsに依存せず、入力時のブロック区切りそのものは保持しない。gzip / zstdの外側圧縮、既存出力の保護は他の形式と共通とする。
+
+フレーミングは逐次処理し、出力は最大1ブロック、入力は最大1論理レコードを保持する。論理レコード本体とデコード後のサイズには16 MiB上限を適用する。エラーには論理レコード番号、展開後ストリーム上のバイト位置、BDW使用時はブロック番号・BDW位置・RDW / SDW位置を記録する。extended BDWは明示的にエラーとする。
 
 ```yaml
 input:
@@ -251,6 +305,9 @@ input:
     path: ./data/messages.dat
     encoding: shift_jis
     rdw:
+      bdw: true
+      spanned: true
+      max_block_length: 32760
       max_record_length: 32760
     fields:
       - { name: message_id, length: 4, type: uint-be }
@@ -258,11 +315,11 @@ input:
       - { name: text, length: rest, type: string, trim: false, max_length: 1024 }
 ```
 
-この例の本体は9〜1,033バイト、RDW 込みでは13〜1,037バイトとなる。同じ fields を output 直下に指定すれば、編集後の文字列長に合う RDW を生成する。
+この例の本体は9〜1,033バイト、論理RDW換算では13〜1,037バイトとなる。同じfieldsとrdw設定をoutput直下に指定すれば、編集後の本体からSDW・BDWを生成する。BDWやspannedを使わない場合は各フラグを省略する。
 
 ### 6.5 encoding の解決と文字コード変換
 
-`jtc_utils::charset::Charset::for_label()` が認識する全ラベル・別名を受け付ける。従来の `encoding_rs::Encoding::for_label()` が認識するラベルも引き続き利用できる。大文字小文字を区別せず、前後の ASCII 空白を除去し、認識できない値は設定エラーとする。`utf-8`、`shift_jis`、`euc-jp`、`iso-2022-jp`、`gb18030`、`windows-1252`、`ibm866`、`utf-16le`、`utf-16be` 等に加え、次のレガシー文字コードを指定できる。`cp932`・`windows-31j`・`windows31j` は従来どおり `shift_jis` に解決する。ログには指定値・正規名・実際の出力文字コードを残す。[jtc-utils: Charset](https://docs.rs/jtc-utils/0.1.0/jtc_utils/charset/enum.Charset.html)
+`jtc_utils::charset::Charset::for_label()` が認識する全ラベル・別名を受け付ける。従来の `encoding_rs::Encoding::for_label()` が認識するラベルも引き続き利用できる。大文字小文字を区別せず、前後の ASCII 空白を除去し、認識できない値は設定エラーとする。`utf-8`、`shift_jis`、`euc-jp`、`iso-2022-jp`、`gb18030`、`windows-1252`、`ibm866`、`utf-16le`、`utf-16be` 等に加え、次のレガシー文字コードを指定できる。`cp932`・`windows-31j`・`windows31j` は従来どおり `shift_jis` に解決する。ログには指定値・正規名・実際の出力文字コードを残す。[jtc-utils: Charset](https://docs.rs/jtc-utils/0.2.1/jtc_utils/charset/enum.Charset.html)
 
 | ラベル | 文字コード・別名 |
 | --- | --- |
@@ -276,7 +333,7 @@ input:
 - CSV はファイル全体を同じデコーダーで逐次 UTF-8 に変換してから解析し、出力は CSV を組み立ててから同じエンコーダーで変換する。状態を持つ文字コードの状態をフィールドやバッファごとにリセットしない。
 - fixed / rdw はまずバイトでレコード・項目を切り出し、`string` / `decimal` / `boolean` / `date` / `time` / `timestamp` 項目を文字コード変換する。各文字項目は独立した文字列として状態を初期化・終端処理する。途中状態を隣の項目へ持ち越さない。
 - CP930 / CP939 は単バイト状態で開始し、SO/SI で漢字との切り替えを行う。出力の終端では必要な SI を出力する。固定長・RDW の `length` は SO/SI を含むバイト数で、シフト制御バイトは文字列値に含めない。
-- JEF は2バイトの漢字コードのみを扱い、ASCII や EBCDIC との混在形式は自動判別しない。補助面の漢字・結合濁点・外字 U+E000–U+EC1D を扱う。半角空白を表現できないため、固定長・RDW の文字項目には `pad_char: "　"`（全角空白）を明示する。JEF は CSV の ASCII 区切り文字や改行も表現できないため、通常は fixed / rdw で使用する。
+- JEF は2バイトの漢字コードのみを扱い、ASCII や EBCDIC との混在形式は自動判別しない。補助面の漢字・結合濁点・外字 U+E000–U+EC1D を扱う。半角空白を表現できないため、固定長・RDW の文字項目には `space_char: "　"`（全角空白）を明示する。JEF は CSV の ASCII 区切り文字や改行も表現できないため、通常は fixed / rdw で使用する。
 - レガシー文字コードの変換表にある非可逆な別名はそのまま適用する。例えば富士通 EBCDIC カナでは ASCII 英小文字を大文字へ変換する。表現可能な文字でも、再デコード後の Unicode が元と一致するとは限らない。
 - `binary` / `bits`、数値のバイナリ表現、ゾーン / パック10進数は、7節のバイト規則で処理する。ファイル全体を文字コード変換して数値領域を破壊しない。
 - 不正なバイト列と変換できない文字はエラーにし、代替文字や数値文字参照へ置換しない。[encoding_rs: Encoder](https://docs.rs/encoding_rs/latest/encoding_rs/struct.Encoder.html)
@@ -284,11 +341,11 @@ input:
 - encoding_rs の UTF-16 エンコーダー要求は UTF-8 出力になるため、UTF-16LE / BE の出力は dxtran が `encode_utf16()` と指定したバイト順で実装する。指定した UTF-16 を UTF-8 で黙って出力しない。
 - `replacement` に解決されるラベルも認識対象とする。非空入力は厳密デコードのエラーになり、出力は encoding_rs の `output_encoding()` に従う UTF-8 とし、実際の出力文字コードをログに明示する。この特殊な文字コードに復元可能な固有バイト表現はない。[encoding_rs: UTF-16 and output encodings](https://docs.rs/encoding_rs/latest/encoding_rs/#utf-16le-utf-16be-and-unicode-encoding-schemes)
 
-対応集合と別名の意味は encoding_rs 0.8.35 と jtc-utils 0.1.0 とともに固定する。これらにない文字コードは受け付けない。従来の標準文字コードの変換経路と `replacement` の出力規則は維持し、jtc-utils は追加のレガシー文字コードに使用する。数値の EBCDIC ゾーン表現は文字コード指定とは独立して `zone: ebcdic` で処理する。
+対応集合と別名の意味は encoding_rs 0.8.44 と jtc-utils 0.2.1 とともに固定する。これらにない文字コードは受け付けない。従来の標準文字コードの変換経路と `replacement` の出力規則は維持し、jtc-utils は追加のレガシー文字コードに使用する。数値の EBCDIC ゾーン表現は文字コード指定とは独立して `zone: ebcdic` で処理する。
 
 ### 6.6 Parquet のネイティブスキーマ
 
-`format: parquet` はローカルの単一ファイルを読み書きする。入力は `id`・`format`、出力はこれらに加えて `sql` を指定する。`path` は YAML または CLI で指定する。`encoding`・`fields`・`csv`・`fixed`・`rdw` は指定しない。
+`format: parquet` はローカルの単一ファイルを読み書きする。入力は `id`・`format`、出力はこれらに加えて `sql` を指定する。`path` は YAML または CLI で指定する。`encoding`・`fields`・`csv`・`fixed`・`lines`・`rdw` は指定しない。
 
 入力はフッターから列名・列順・論理型・NULL許容を取得する。CSVのような値に基づく型推論は行わない。公開列名には4節の識別子規則を適用し、重複・不正な名前は設定エラーとする。文字列、整数、浮動小数点、Decimal、真偽値、日付・時刻・タイムスタンプ、バイナリ、リスト・構造体などをArrowとして保持する。CSV・固定長・RDWへ出力する際は、出力形式で扱える型・幅へ必要に応じてSQLでCASTや展開を行う。
 
@@ -314,7 +371,7 @@ output:
 
 読込は `--threads` とメモリ設定に応じて行グループを並列デコードできる。結果は行グループの順、各グループ内の行順で返し、元レコード番号をファイル全体で連続させる。1入力につき1つの順序付きストリームとしてSQLへ渡す。射影で使わない列も、読み込んだ範囲ではデコードする。`check` / `explain` はフッターとスキーマを検査し、`check --scan` は全データページを読み込む。LIMITで読まれなかった範囲の検査は保証しない。
 
-Parquetの読込バッチは最大8,192行とし、フッターの平均非圧縮サイズを使って16 MiBを目安に行数を減らす。出力は行数上限と推定エンコードサイズ16 MiBを使って行グループを区切り、ライブラリのバッファ使用量もバッチ間で確認してフラッシュする。これらはページ展開後の厳密なメモリ上限ではない。Parquetの巨大な1値・ページにはCSV / fixed / rdwの16 MiBレコード上限を適用せず、ライブラリのバッファをDataFusionのメモリプール管理外で使用する。ファイル全体をcollectしてから出力する方式は使用しない。
+Parquetの読込バッチは最大8,192行とし、フッターの平均非圧縮サイズを使って16 MiBを目安に行数を減らす。出力は行数上限と推定エンコードサイズ16 MiBを使って行グループを区切り、ライブラリのバッファ使用量もバッチ間で確認してフラッシュする。これらはページ展開後の厳密なメモリ上限ではない。Parquetの巨大な1値・ページにはCSV / fixed / lines / rdwの16 MiBレコード上限を適用せず、ライブラリのバッファをDataFusionのメモリプール管理外で使用する。ファイル全体をcollectしてから出力する方式は使用しない。
 
 0行でもスキーマとフッターを持つ有効なファイルを出力する。フッターの書き込み・flush・fsyncが成功してから、12節の共通の原子的公開を行う。破損した入力は入力エラー、エンコード・書き込み失敗は出力エラーとし、既存出力を保護する。
 
@@ -417,7 +474,7 @@ fields:
   - { name: status, offset: 15, length: 1 }
 ```
 
-項目定義は input / output 直下の fields に置く。Parquet は fields を使わず、6.6節のネイティブスキーマを使用する。他の入力は全項目を定義し、出力は fixed / rdw で全物理項目、CSV では必要な項目の出力設定だけを定義する。CSV 出力の部分指定と SQL の列順の扱いは11.2節に従う。
+項目定義は input / output 直下の fields に置く。Parquet は fields を使わず、6.6節のネイティブスキーマを使用する。他の入力は全項目を定義し、出力は fixed / lines / rdw で全物理項目、CSV では必要な項目の出力設定だけを定義する。CSV 出力の部分指定と SQL の列順の扱いは11.2節に従う。
 
 入力・固定幅項目の `type` の既定は `string`。`offset` の省略時は先頭項目を0、以降を直前項目の末尾として配置する。`fixed.record_length` は省略時に全項目の最大終端から導出する。input.fields の配列順を列の公開順とし、bits はその位置で子ビットの配列順に複数列へ展開する。fixed / rdw の物理配置は解決した offset とバイト長で決める。
 
@@ -425,7 +482,7 @@ fields:
 
 ### 7.1.1 レコード条件付き項目定義
 
-fixed / rdw の `input.fields` と `output.fields` には、項目ごとに Boolean を返す SQL 式の `when` を指定できる。COBOL の REDEFINES に相当する領域共有を、レコード条件によって選択する。
+fixed / lines / rdw の `input.fields` と `output.fields` には、項目ごとに Boolean を返す SQL 式の `when` を指定できる。COBOL の REDEFINES に相当する領域共有を、レコード条件によって選択する。
 
 ```yaml
 fields:
@@ -462,17 +519,17 @@ fixed のレコード長は全項目の最大終端（または同じ値の `fix
 | キー | 意味 |
 | --- | --- |
 | `name` | 公開列名。bits では領域の識別名とし、子ビットの name を列名にする。FILLER は省略 |
-| `when` | fixed / rdw のレコード条件を表す Boolean の SQL 式。7.1.1節を参照 |
+| `when` | fixed / lines / rdw のレコード条件を表す Boolean の SQL 式。7.1.1節を参照 |
 | `offset` | 0始まりの本体内バイト位置。省略時は前項目に続ける |
-| `length` | 正のバイト長。rdw の末尾の `string` / `binary` は `rest` も可。CSV では指定しない |
+| `length` | 正のバイト長。rdw の末尾の `string` / `bstring` / `binary` は `rest` も可。CSV では指定しない |
 | `type` | 7.3節の列挙値。入力・固定幅レイアウトの既定は `string`。CSV の output.fields では省略時に SQL の結果型を引き継ぐ |
-| `precision` | 10進数の有効桁数。1〜38 |
-| `scale` | 10進数の小数桁数。0〜precision、既定0 |
+| `precision` | 格納する10進数の整数係数の有効桁数。1〜38。10進数系と scale を指定したバイナリ整数型で使用 |
+| `scale` | 10進数系・バイナリ整数型の10進スケール。-38〜38、既定0。負の値は末尾の省略ゼロを表す |
 | `zone` | ゾーン系のバイト体系。`ebcdic`（既定）または `ascii` |
 | `nullable` | 入力と rdw 出力の NULL 許容は既定 `false`。CSV 出力は省略時に SQL の結果列の nullable を引き継ぐ。fixed 出力の NULL はこの値にかかわらず型別の既定値で補完 |
-| `trim` | input / output の文字として格納する型で `false` / `left` / `right` / `both`。CSV でも指定可。従来の `none` は `false` の別名 |
-| `pad_char` | fixed / rdw の文字項目を幅埋め・trim する Unicode 1文字。fixed の NULL 埋めにも使用。既定は U+0020 |
-| `null_if` | fixed / rdw の文字項目を NULL にする文字列の配列。完全一致、既定は空配列 |
+| `trim` | input / output の文字として格納する型と bstring で `false` / `left` / `right` / `both`。CSV でも指定可。従来の `none` は `false` の別名 |
+| `space_char` | 文字項目・bstring の幅埋め・trim に使う Unicode 1文字。CSV の trim、fixed の NULL 埋めにも使用。既定は U+0020。旧 pad_char は廃止 |
+| `null_if` | fixed / lines / rdw の文字項目を NULL にする文字列の配列。完全一致、既定は空配列 |
 | `null_if_pattern` | 同じ文字項目を NULL にする正規表現1つ。フィールド全体への一致、既定は未指定 |
 | `null_output` | rdw の文字項目で NULL を出力する具体的な文字列 |
 | `null_bytes` | 入力項目全体を NULL とする明示的な16進バイト列。rdw の NULL 出力にも使用 |
@@ -504,6 +561,7 @@ CSV の output.fields では、type・precision / scale・unit / timezone・null
 | `time` | 設定した書式の時刻文字列 | CSV または文字項目の幅 |
 | `timestamp` | 設定した書式・タイムゾーンの日時文字列 | CSV または文字項目の幅 |
 | `binary` | 生バイト列。CSV では hex / Base64 の文字列 | 固定幅、CSV、rdw の末尾は `rest` |
+| `bstring` | 元の文字コードのバイト列。SQL では Binary。space_char をエンコードしたバイト列で trim・幅埋め | fixed / rdw のバイト長、rdw の末尾は `rest` |
 | `bits` | 名前付きビットを Boolean 列へ展開する領域 | 正の n バイト。fixed / rdw の固定幅項目 |
 | `int-le` | 2の補数の符号あり整数、リトルエンディアン | 1〜8バイト |
 | `int-be` | 2の補数の符号あり整数、ビッグエンディアン | 1〜8バイト |
@@ -521,19 +579,42 @@ CSV の output.fields では、type・precision / scale・unit / timezone・null
 | `upacked` | 末尾に符号ニブル F を持つ符号なしパック10進数 | 最大 2 × length - 1 桁 |
 | `npacked` | 符号ニブルのないパック10進数 | 最大 2 × length 桁 |
 
-`precision` を省略した場合、`decimal` は38、ゾーン / パック系は格納容量の桁数とする。38桁を超える容量には `precision <= 38` を明示する。容量に満たない精度を指定した場合、余剰の先頭桁・ニブルは0に限る。小数点は `decimal` だけが物理的な文字を持ち、ゾーン / パック系では `scale` による暗黙小数点とする。
+`precision` を省略した場合、`decimal` は38、ゾーン / パック系は格納容量の桁数とする。scale を指定したバイナリ整数型では、指定バイト幅の全範囲を表せる10進桁数を既定とする。例えば2バイトの符号あり整数は5桁、8バイトの符号なし整数は20桁。精度は格納容量以下に限り、38桁を超える容量には `precision <= 38` を明示する。容量に満たない精度を指定したゾーン / パック系では、余剰の先頭桁・ニブルは0に限る。
+
+`int-le` / `int-be` / `uint-le` / `uint-be` に `scale` を指定すると、物理的には従来どおりのバイナリ整数を格納し、SQL では Decimal128 として扱う。`scale: 0` の明示も Decimal128 を選ぶ。scale を省略した場合は従来どおり Int64 / UInt64 とし、precision の単独指定は認めない。浮動小数点型、生バイト列の `binary` / `bstring`、その他の非数値型に scale は指定できない。
+
+ゾーン / パック系と scale を指定したバイナリ整数型の論理値は `格納整数 × 10^-scale` とする。COBOL の `V` は暗黙小数点、`P` は格納しないゼロの位置を表す。例えば格納整数123に対して、`9(3)V99` は scale: 2、`9(3)PPP` は scale: -3、`PPP9(3)` は scale: 6 に相当し、それぞれ1.23・123000・0.000123となる。`P` の位置は precision に数えず、末尾の `P` は負の scale、先頭の `P` は格納桁数を超える正の scale で表す。[IBM: PICTURE の P / V](https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=clause-symbols-used-in-picture)、[IBM: Computational items](https://www.ibm.com/docs/en/cobol-zos/6.3.0?topic=clause-computational-items)
+
+```yaml
+fields:
+  - { name: amount, type: int-be, length: 2, precision: 5, scale: 2 }
+  - { name: thousands, type: packed, length: 2, precision: 3, scale: -3 }
+  - { name: fraction, type: uzoned, length: 3, precision: 3, scale: 6 }
+```
+
+小数点は `decimal` だけが物理的な文字を持つ。`decimal` の負の scale は、例えば scale: -3 なら通常の10進文字列123000を係数123として扱い、1000の倍数でない値はエラーとする。すべての数値型で、出力時に非ゼロの桁を失う scale 変更、precision 超過、物理バイト幅の超過、符号なし項目への負数出力はエラーとする。
 
 ### 7.4 文字項目・日付時刻・binary・bits
 
-`string` は項目のバイト範囲を切り出してからデコードする。fixed / rdw 入力の既定 trim は `right`、除去対象は `pad_char` とし、`trim: false` で末尾の埋め文字も保持できる。`length: rest` と CSV 入力の既定は `false` とする。従来の `trim: none` も `false` の別名として受け付ける。
+`bstring` は fixed / lines / rdw の項目本体をデコードせず、Arrow Binary として保持する。文字コード上で不正なバイト列もそのまま読み書きできる。`length` / `max_length` はバイト数であり、文字数へ置き換えない。`encoding` は `space_char` と明示された NULL 文字列のエンコードに使い、データ本体の暗黙変換には使わない。入出力の encoding が異なっても本体は変換しない。
 
-`decimal` は `-123.45` のような10進文字列として解釈する。先頭の `+` / `-` と小数点 `.` を認め、指数表記・桁区切りは認めない。fixed / rdw 入力では既定の `trim: both` により外側の `pad_char` を除く。CSV 入力では明示した trim を型変換前に適用し、省略時は空白を除去しない。
+固定幅 bstring の既定の入力 trim は `right`、`length: rest` は `false`。`space_char`（既定 U+0020）を指定 encoding で変換した完全なバイト列を、指定した側から繰り返し除去する。出力では trim の明示時だけ除去し、不足幅を同じバイト列で右側に埋める。部分的なバイト列は除去しない。CP939 の半角空白は `40`、UTF-16LE の U+3000 は `00 30` となる。データを残り幅に切り詰めたり、埋めバイトを途中で切ったりせず、幅超過・埋められない余りはエラーとする。
 
-出力の trim は明示した場合だけ適用し、省略時は元の出力文字列を保持する。SQL 値を文字列に整形した後、文字コード変換・幅検証・CSV の引用処理より前に trim する。fixed / rdw の固定幅出力では trim 後に、非 NULL の `decimal` を右寄せ、その他の文字項目を左寄せとし、不足幅を `pad_char` で再度埋める。例えば長さ5・`trim: both` の string に `"  A  "` を出力すると `"A    "` になる。fixed で値が NULL の `string` / `boolean` / `date` / `time` / `timestamp` は項目全体を同じ `pad_char` で埋め、`decimal` は7.9節に従って0を右寄せして埋める。既定は U+0020 とし、例えば `pad_char: "\u3000"` で全角空白を使える。空文字・複数文字の指定は設定エラーとする。文字の途中で切らず、エンコードと終端状態のリセットを含めてちょうど指定バイト長になることを検証する。
+fixed の bstring の NULL は項目全体をエンコード済み space_char で埋める。rdw の NULL は他の型と同じく明示表現を要求する。`null_bytes` は元の項目全体との一致、`null_if` は各文字列を encoding で変換したバイト列と trim 後の本体との一致で判定する。`null_output` は encoding で変換して必要な幅まで埋める。bstring の `null_if_pattern` は使用不可とし、NULL 判定のための暗黙デコードは行わない。
 
-`trim: false` は除去なし、`left` は先頭、`right` は末尾、`both` は両端の連続した対象文字を取り除く。fixed / rdw では `pad_char`、CSV では U+0020 だけを対象とし、タブ・改行等の他の空白文字まで自動で除去しない。入力ではデコード後、NULL マーカーの照合と型変換より前に適用する。CSV の未引用の空フィールドは trim 前に NULL と判定し、空白だけの値が trim 後に空文字になっても NULL には変えない。`pad_char` を指定できる型は fixed / rdw の文字項目6型だけとする。rdw の `rest` は幅埋めしないが、明示した trim の対象にも `pad_char` を使う。`trim: true`、不明な文字列、文字項目以外への trim 指定は設定エラーとする。
+bstring は fixed / lines / rdw 専用とする。CSV へ Binary 列を直接出力すると従来の binary の hex / Base64 表現になる。文字として出力する場合は SQL で `icu_decode` を使う。Parquet / Lua は通常の Binary 列として受け渡す。`binary` 型の厳密な幅一致・ゼロバイト NULL 補完は従来どおりとし、space_char による trim・padding が必要な項目には bstring を使う。
 
-文字が選んだ encoding に存在しない場合や、埋め文字を繰り返しても残りバイト幅をちょうど満たせない場合はエラーとする。別の文字への置換やマルチバイト文字の途中での切断は行わない。FILLER の `fill_byte` は生バイトの指定として扱う。
+SQL の比較・JOIN・連結・ソートは DataFusion 標準の Binary の規則を使う。EBCDIC の bstring を `ORDER BY` するとバイト列順になり、Unicode 順への変換は行わない。DataFusion 55.2.0 は Binary と文字列の比較では文字列側を UTF-8 バイト列へ変換できるため、文字コードが異なる値の文字としての一致は保証しない。`icu_decode(binary_column, encoding)` で文字列へ揃えるか、`icu_encode(text_column, encoding)` でバイト列へ揃えて比較する。固定幅の空白を保持した列と比較する場合は変換関数にも同じバイト長を指定する。
+
+`string` は項目のバイト範囲を切り出してからデコードする。fixed / rdw 入力の既定 trim は `right`、除去対象は `space_char` とし、`trim: false` で末尾の埋め文字も保持できる。`length: rest` と CSV 入力の既定は `false` とする。従来の `trim: none` も `false` の別名として受け付ける。
+
+`decimal` は `-123.45` のような10進文字列として解釈する。先頭の `+` / `-` と小数点 `.` を認め、指数表記・桁区切りは認めない。fixed / rdw 入力では既定の `trim: both` により外側の `space_char` を除く。CSV 入力では明示した trim を型変換前に適用し、省略時は空白を除去しない。
+
+出力の trim は明示した場合だけ適用し、省略時は元の出力文字列を保持する。SQL 値を文字列に整形した後、文字コード変換・幅検証・CSV の引用処理より前に trim する。fixed / rdw の固定幅出力では trim 後に、非 NULL の `decimal` を右寄せ、その他の文字項目を左寄せとし、不足幅を `space_char` で再度埋める。例えば長さ5・`trim: both` の string に `"  A  "` を出力すると `"A    "` になる。fixed で値が NULL の `string` / `boolean` / `date` / `time` / `timestamp` は項目全体を同じ `space_char` で埋め、`decimal` は7.9節に従って0を右寄せして埋める。既定は U+0020 とし、例えば `space_char: "\u3000"` で全角空白を使える。空文字・複数文字の指定は設定エラーとする。文字の途中で切らず、エンコードと終端状態のリセットを含めてちょうど指定バイト長になることを検証する。
+
+`trim: false` は除去なし、`left` は先頭、`right` は末尾、`both` は両端の連続した対象文字を取り除く。全形式で `space_char`（既定 U+0020）だけを対象とし、タブ・改行等の他の空白文字まで自動で除去しない。入力ではデコード後、NULL マーカーの照合と型変換より前に適用する。CSV の未引用の空フィールドは trim 前に NULL と判定し、空白だけの値が trim 後に空文字になっても NULL には変えない。`space_char` を指定できる型は文字項目6型と fixed / rdw の bstring とする。rdw の `rest` は幅埋めしないが、明示した trim の対象にも `space_char` を使う。`trim: true`、不明な文字列、文字項目以外への trim 指定は設定エラーとする。
+
+文字が選んだ encoding に存在しない場合や、埋め文字を繰り返しても残りバイト幅をちょうど満たせない場合はエラーとする。文字項目の幅埋めでは、埋め文字自体のエンコードに SO/SI やエスケープシーケンスが必要な場合もエラーとする。例えば CP930 / CP939 / ISO-2022-JP の全角空白は幅埋めに使えないが、半角空白は使える。別の文字への置換やマルチバイト文字の途中での切断は行わない。FILLER の `fill_byte` は生バイトの指定として扱う。
 
 ```yaml
 # UTF-16 の文字列を U+3000 で幅埋めする例
@@ -546,18 +627,18 @@ output:
     fixed:
       record_separator: none
     fields:
-      - { name: label, length: 8, type: string, pad_char: "\u3000" }
+      - { name: label, length: 8, type: string, space_char: "\u3000" }
 ```
 
 この例の `names.label` が `A` なら、`A` と U+3000 を3文字書き、バイト列は `41 00 00 30 00 30 00 30` になる。同じ定義の `trim: right` で `A` に戻る。`label` が NULL なら U+3000 を4文字書き、`00 30 00 30 00 30 00 30` で8バイト全体を埋める。
 
-UTF-16 の wstring 相当の文字列も、`type: string` とファイルの `encoding`、項目の `pad_char` で定義する。
+UTF-16 の wstring 相当の文字列も、`type: string` とファイルの `encoding`、項目の `space_char` で定義する。
 
 #### 7.4.1 boolean
 
 `true_values` / `false_values` はそれぞれ1件以上の文字列配列とし、入力と候補に同じ trim を適用した後に重なる候補を禁止する。デコードと必要な trim 後に完全一致で判定し、どちらにも当たらない値はエラーとする。既定は `"true"` / `"false"`。大文字小文字の自動変換や、数値の非ゼロを真とする判定は行わない。
 
-非 NULL の出力は `true_output` / `false_output`、省略時は対応する入力候補の先頭を使う。例えば `true_values: ['Y']`、`false_values: ['N']` で Y/N を読み書きできる。固定幅で pad_char による幅埋めをした後にも、同じ定義で元の真偽値へ戻ることを検証する。入力候補、出力表現、NULL 条件の衝突も出力計画時に検出する。
+非 NULL の出力は `true_output` / `false_output`、省略時は対応する入力候補の先頭を使う。例えば `true_values: ['Y']`、`false_values: ['N']` で Y/N を読み書きできる。固定幅で space_char による幅埋めをした後にも、同じ定義で元の真偽値へ戻ることを検証する。入力候補、出力表現、NULL 条件の衝突も出力計画時に検出する。
 
 #### 7.4.2 date / time / timestamp
 
@@ -765,8 +846,9 @@ CSV の NULL は6.2節に固定する。以下の `null_if` / `null_if_pattern` 
 
 | type | NULL の補完値と出力バイト |
 | --- | --- |
-| `string` / `boolean` / `date` / `time` / `timestamp` | `pad_char` を encoding でエンコードし、項目幅全体を埋める。既定は半角 SPACE（U+0020）で、wstring 相当では U+3000 等も指定可能 |
-| `decimal` | 数値0を scale に従って文字化し、通常と同じ右寄せ・pad_char で幅を埋める。例えば scale: 2 は `0.00` |
+| `string` / `boolean` / `date` / `time` / `timestamp` | `space_char` を encoding でエンコードし、項目幅全体を埋める。既定は半角 SPACE（U+0020）で、wstring 相当では U+3000 等も指定可能 |
+| `bstring` | space_char を encoding で変換したバイト列の繰り返しで全バイト幅を埋める |
+| `decimal` | 数値0を scale に従って文字化し、通常と同じ右寄せ・space_char で幅を埋める。例えば scale: 2 は `0.00` |
 | `int-le` / `int-be` / `uint-le` / `uint-be` | 整数0。n バイトすべて `00` |
 | `float-le` / `float-be` / `hfloat-le` / `hfloat-be` | 正の0。対応する4 / 8 / 16バイトすべて `00`。各型で許される幅は7.3節に従う |
 | `binary` | n バイトすべて `00` のバイト列 |
@@ -826,9 +908,9 @@ NULL の補完後は、空文字・数値0・ゼロバイト列・false 等の�
 
 `null_output` は `decimal` や日付時刻型でも具体的な欠損表現の文字列として扱い、通常の数値・日付等の書式を要求しない。例えば `decimal` に `null_output: '-'` を指定できる。`null_if` の先頭要素の自動採用や、正規表現からの出力値の生成は行わない。
 
-rdw の出力計画時に NULL の出力バイトを組み立て、幅・文字コード・最大長を検証する。さらに同じ項目定義の入力規則を適用し、`null_if` / `null_if_pattern` または `null_bytes` によって確実に NULL と認識されることを検証する。文字項目では pad_char による幅埋め後にデコード・trim した値で判定する。
+rdw の出力計画時に NULL の出力バイトを組み立て、幅・文字コード・最大長を検証する。さらに同じ項目定義の入力規則を適用し、`null_if` / `null_if_pattern` または `null_bytes` によって確実に NULL と認識されることを検証する。文字項目では space_char による幅埋め後にデコード・trim した値で判定する。
 
-rdw の固定幅項目も幅を維持する。例えば長さ8の UTF-8 文字列で `null_output: '<NULL>'` を使えば、`<NULL>` と既定の半角空白2文字を書く。幅埋めには `pad_char` を使い、`null_output: ''` なら幅全体が埋め文字になるため、その入力後の値も NULL と判定できる設定が必要となる。
+rdw の固定幅項目も幅を維持する。例えば長さ8の UTF-8 文字列で `null_output: '<NULL>'` を使えば、`<NULL>` と既定の半角空白2文字を書く。幅埋めには `space_char` を使い、`null_output: ''` なら幅全体が埋め文字になるため、その入力後の値も NULL と判定できる設定が必要となる。
 
 rdw でも固定幅項目の NULL はその幅を使う。末尾の `length: rest` は NULL 表現の実バイト数を使い、空白埋めせず、RDW の長さに含める。NULL のために項目を省略したり、後続項目の位置を詰めたり、レコード全体を落としたりしない。
 
@@ -887,7 +969,7 @@ output:
 
 ### 7.10 内部表現
 
-内部の `RecordLayout` は、fields と fixed / rdw の設定から生成する。項目の `FieldType`、バイト範囲、精度・小数桁、文字コード、pad_char、zone、bits の子列・ビット位置、文字列・バイトの NULL 条件、コンパイル済み正規表現・日時パターン、形式ごとに検証済みの NULL 出力規則（fixed の型別既定値・補完バイトと bits の false 補完 / rdw の明示表現）、元定義の位置を持つ。利用者の設定では `type` に一本化し、実装内で必要な変換処理を選ぶ。
+内部の `RecordLayout` は、fields と fixed / rdw の設定から生成する。項目の `FieldType`、バイト範囲、精度・小数桁、文字コード、space_char、zone、bits の子列・ビット位置、文字列・バイトの NULL 条件、コンパイル済み正規表現・日時パターン、形式ごとに検証済みの NULL 出力規則（fixed の型別既定値・補完バイトと bits の false 補完 / rdw の明示表現）、元定義の位置を持つ。利用者の設定では `type` に一本化し、実装内で必要な変換処理を選ぶ。
 
 ## 8. 任意の枝の import と上書き
 
@@ -906,7 +988,7 @@ input:
 
 ### 8.2 利用できる場所と参照先
 
-入力1件に限らず、ジョブ全体、input / process / output の配列、input.fields / output.fields、フィールド1件、bits の配列・子定義、csv / fixed / rdw の共通設定、SQL 文字列等、任意の枝で使える。fields だけでなく、fields と fixed 等を持つ共通のマップ全体も再利用できる。
+入力1件に限らず、ジョブ全体、input / process / output の配列、input.fields / output.fields、フィールド1件、bits の配列・子定義、csv / fixed / lines / rdw の共通設定、SQL 文字列等、任意の枝で使える。fields だけでなく、fields と fixed 等を持つ共通のマップ全体も再利用できる。
 
 ```yaml
 # fields.yml のルートは項目定義の配列
@@ -954,9 +1036,9 @@ fields:
 | 項目の type | Arrow / SQL 内部型 |
 | --- | --- |
 | `string` | Utf8 |
-| `decimal` / `zoned` / `lzoned` / `tzoned` / `uzoned` / `packed` / `upacked` / `npacked` | Decimal128(precision, scale) |
-| `int-le` / `int-be` | Int64。1〜8バイトを符号拡張 |
-| `uint-le` / `uint-be` | UInt64。1〜8バイトをゼロ拡張 |
+| `decimal` / `zoned` / `lzoned` / `tzoned` / `uzoned` / `packed` / `upacked` / `npacked` | Decimal128(max(precision, scale), scale) |
+| `int-le` / `int-be` | scale 省略時は Int64。1〜8バイトを符号拡張。scale 指定時は Decimal128(max(precision, scale), scale) |
+| `uint-le` / `uint-be` | scale 省略時は UInt64。1〜8バイトをゼロ拡張。scale 指定時は Decimal128(max(precision, scale), scale) |
 | `float-le` / `float-be` の4バイト | Float32 |
 | `float-le` / `float-be` の8バイト | Float64 |
 | `hfloat-le` / `hfloat-be` | Float64。8 / 16バイト HFP の精度の扱いは7.7節 |
@@ -965,11 +1047,13 @@ fields:
 | `date` | Date32 |
 | `time` | Time64(Microsecond / Nanosecond) |
 | `timestamp` | Timestamp(unit, timezone)。timezone が null ならメタデータは None |
-| `binary` | Binary |
+| `binary` / `bstring` | Binary |
 
-Decimal の精度は1〜38、小数桁は0〜precisionとする。入出力アダプターは10進数の整数部・小数部の超過をエラーとし、不要な末尾ゼロだけなら値を変えずにスケールを合わせてよい。ゾーン / パック系は整数の係数に `10^-scale` を掛けた値として公開する。
+Decimal の格納係数の precision は1〜38、scale は-38〜38とする。先頭の `P` により scale が precision を超える場合、Arrow / SQL の精度は scale まで広げるが、格納係数の桁数制約は元の precision で検証する。入出力アダプターは10進数の整数部・小数部の超過をエラーとし、不要な末尾ゼロだけなら値を変えずにスケールを合わせてよい。ゾーン / パック系と scale を指定したバイナリ整数型は整数の係数に `10^-scale` を掛けた値として公開する。
 
-SQL の演算・明示 CAST は DataFusion の規則に従う。論理型の変更は SQL の CAST で行う。例えば COUNT の整数結果をゾーン / パック系へ出力する場合は、SQL で必要な精度・scale の Decimal に CAST する。丸めが必要な場合も SQL の式に明記し、Writer は出力レイアウトに合う論理型の値をシリアライズする。
+SQL の演算・明示 CAST は DataFusion の規則に従う。論理型の変更は SQL の CAST で行う。例えば COUNT の整数結果をゾーン / パック系や scale を指定したバイナリ整数型へ出力する場合は、SQL で必要な精度・scale の Decimal に CAST する。丸めが必要な場合も SQL の式に明記し、Writer は出力レイアウトに合う論理型の値をシリアライズする。
+
+Parquet の Decimal は負の scale を格納できないため、負の scale の列を Parquet に出力する場合は SQL で整数桁数に足りる非負 scale の Decimal に CAST する。例えば precision: 3, scale: -3 の値は `CAST(value AS DECIMAL(6, 0))` で出力できる。
 
 CSV Writer は Utf8、符号あり / なし整数、Decimal128、Float32 / Float64、Boolean、Date32、Time64、Timestamp、Binary を出力できる。`output.fields` に指定した項目の書式を適用し、未指定の真偽値・日付時刻・バイト列は7.4節の既定表現を使う。type や時刻の unit、timestamp の timezone を省略した項目は、SQL の結果の Arrow 型・メタデータを引き継ぐ。
 
@@ -1119,6 +1203,77 @@ SELECT cobol_to_char(0, '****.**');         -- '****.**'
 
 編集結果の空白を固定長出力でも保持するには、文字項目の `trim: false` を指定し、書式の表示幅に合う `length` を設定する。
 
+### 10.3 文字列とバイナリの文字コード変換
+
+| 関数 | 入力 / 戻り値 |
+| --- | --- |
+| `icu_decode(value, encoding [, length [, space_char]])` | Binary 系 / Utf8 |
+| `icu_encode(value, encoding [, length [, space_char]])` | Utf8 系 / Binary |
+
+`process.sql` / `output.sql`、項目の `when`、入出力の `check.when` で使用できる。文字コードの名前・別名と変換規則は6.5節の TextEncoding と共通にし、UTF-8、CP932、UTF-16、JEF、富士通 EBCDIC、CP930 / CP939 等を扱う。関数名は ICU 日時関数に合わせるが、文字コード変換は入出力と同じ encoding_rs / jtc-utils を使う。
+
+任意の length は指定 encoding 上のバイト数。encode はエンコード後、decode はデコード前のバイト列を、space_char のエンコード結果の繰り返しで右側へ幅埋めする。省略時は元の長さを保持する。length の範囲は0〜16 MiB、値のバイト数も16 MiBまで。長さ超過や埋めバイトで残り幅を満たせない場合はエラーとし、切り詰めは行わない。CP930 / CP939 の SO/SI や UTF-16 のコード単位もバイト数に含める。
+
+space_char の既定は U+0020、指定時は Unicode 1文字を必須とする。長さを指定する場合はその文字を encoding で表せる必要がある。JEF の幅埋めには U+3000 を明示する。2引数で変換する場合は space_char を使用しないため、JEF でも既定 U+0020 の変換を要求しない。末尾空白を自動で除去しない。除去する場合は bstring 項目の trim、またはデコード後の `rtrim` 等で明示する。
+
+encoding・length・space_char は列・式でも指定でき、スカラーと列を混在できる。同じバッチ内の encoding / space_char の組を最大128種類までキャッシュする。引数のいずれかが NULL の行は戻り値型の NULL を返す。不正なバイト列・未知の文字コード・変換不能文字・不正な型や長さは SQL エラーにし、置換文字への補正や NULL への自動置換を行わない。Binary / LargeBinary / BinaryView / FixedSizeBinary、Utf8 / LargeUtf8 / Utf8View を受け付ける。
+
+```sql
+SELECT icu_decode(X'C14040', 'cp939');       -- 'A  '
+SELECT icu_encode('A', 'cp939', 4);         -- X'C1404040'
+SELECT icu_encode('あ', 'cp932', 4);        -- X'82A02020'（4バイト）
+SELECT icu_decode(X'82A0', 'cp932', 4);     -- 'あ  '（元コード上で4バイト）
+SELECT icu_encode('A', 'utf-16le', 4, '　'); -- X'41000030'
+```
+
+### 10.4 文字コードを指定する文字列関数
+
+次の `icu_` 関数を SQL、項目の `when`、入出力の `check.when` に登録する。第2引数に encoding を必須指定し、長さ・切り出し位置・検索結果の位置はバイト単位とする。文字列型の引数は指定 encoding へ変換し、Binary 型は元バイトを使う。バイト列を返す関数は Binary、数値は Int64、判定は Boolean を返す。
+
+| 関数 | 動作 |
+| --- | --- |
+| `icu_length(value, encoding)` / `icu_octet_length(value, encoding)` | バイト数 |
+| `icu_bit_length(value, encoding)` | バイト数 × 8 |
+| `icu_substr(value, encoding, start [, length])` / `icu_substring(...)` | 1始まりのバイト位置から切り出す |
+| `icu_left(value, encoding, n)` / `icu_right(...)` | 先頭 / 末尾から n バイトを取り出す |
+| `icu_trim(value, encoding [, pattern])` / `icu_btrim(...)` | 両端の pattern の繰り返しを除去する |
+| `icu_ltrim(value, encoding [, pattern])` / `icu_rtrim(...)` | 先頭 / 末尾の pattern の繰り返しを除去する |
+| `icu_lpad(value, encoding, length [, pattern])` / `icu_rpad(...)` | 指定バイト長まで先頭 / 末尾を埋める |
+| `icu_upper(value, encoding)` / `icu_lower(...)` | 大文字 / 小文字へ変換し、同じ文字コードへ戻す |
+| `icu_replace(value, encoding, from, to)` | 重ならない from の全出現を to へ置換する |
+| `icu_starts_with(value, encoding, pattern)` / `icu_ends_with(...)` / `icu_contains(...)` | 先頭 / 末尾 / 内部のバイト列一致 |
+| `icu_strpos(value, encoding, pattern)` / `icu_instr(...)` / `icu_position(...)` | 最初の一致の1始まりのバイト位置。なければ0 |
+| `icu_repeat(value, encoding, n)` | バイト列を n 回連結する |
+
+value と pattern / from / to は Binary 系または文字列型を受け付ける。文字コードの対応範囲は10.3節と同じ。Binary の本体を UTF-8 へ暗黙変換しない。切り出し・比較・検索・置換はバイト列で行う。
+
+検索・置換では、文字列で指定した pattern / from もシフト制御を含むエンコード済みバイト列として照合する。CP939 の1つの DBCS 区間内から部分的な文字列を文字として検索する場合などは、`icu_decode` 後に標準の contains / strpos / replace を使う。
+
+substr は PostgreSQL / DataFusion と同様に、start が1未満なら先頭より前の位置と扱い、その分を指定 length から除く。例えば `icu_substr('abcd', 'utf-8', 0, 3)` は `ab`。length の省略は末尾まで、負の length はエラー、範囲外は空の Binary とする。left / right の n が負なら末尾 / 先頭の絶対値 n バイトを除いた部分を返す。これらは文字やシフト制御の途中も切り出せる。結果を文字列として使う際の妥当性は `icu_decode` が検証する。
+
+trim / padding の pattern は省略時 U+0020。文字列の pattern は指定 encoding へ変換し、Binary はそのまま使う。空の pattern はエラー。文字の集合ではなく、指定バイト列全体を1単位として扱う。CP932 の全角空白は `81 40`、JEF は `40 40`、UTF-16LE は `00 30`、UTF-16BE は `30 00` の単位で除去・追加する。padding は長さ超過や pattern の途中を切らないと埋められない幅をエラーにし、値を切り詰めない。JEF では全角空白を明示する。
+
+CP930 / CP939 / ISO-2022-JP のシフト制御を含む編集パターンは文字としての一致とシフト状態も解釈する。「　日本　」のすべてが1つの DBCS 区間にある場合も前後の全角空白を除去できる。編集後はシフト制御を再生成し、padding の length はその結果のバイト数とする。この場合は入力とパターンを厳密にデコードし、不正なシフトや文字をエラーとする。bstring 項目そのものの trim / padding は7.4節の生バイト列の規則を維持する。
+
+10.3節の `icu_encode` / `icu_decode` に長さ・全角空白を指定する場合も、状態を持つ文字コードの padding に同じ規則を使う。例えば CP939 の「日本」は6バイト、「日本　」は8バイトであり、空白を単独で変換した SO/SI 付き4バイトをそのまま追加する必要はない。
+
+upper / lower はデコード、Unicode のロケール非依存の大文字・小文字変換、再エンコードを行う。ロケール引数は持たない。文字の展開で長さが変わる場合があり、変換後の文字を encoding で表せなければエラーとする。その他のバイト操作は本体をデコードしない。
+
+検索の空 pattern は先頭で一致するため strpos は1、starts_with / ends_with / contains は TRUE。replace の空 from は元の値を返す。repeat の n が0以下なら空の Binary を返す。入力・結果は16 MiBまでとし、repeat / replace は生成サイズを検査してから確保する。
+
+全引数に列・式を指定でき、スカラーと列を混在できる。いずれかの引数が NULL の行は戻り値型の NULL を返し、未知の文字コード等の値検査を行わない。文字コードの解決結果はバッチ内で最大128種類まで再利用する。Binary / LargeBinary / BinaryView / FixedSizeBinary、Utf8 / LargeUtf8 / Utf8View、整数の各物理型を受け付ける。
+
+```sql
+SELECT icu_rtrim(code, 'cp939');             -- EBCDIC の半角空白を除去
+SELECT icu_rpad(code, 'cp939', 10);          -- EBCDIC の空白で10バイトにする
+SELECT icu_length('あ', 'cp932');            -- 2
+SELECT icu_substr('あい', 'cp932', 3, 2);    -- X'82A2'
+SELECT icu_decode(icu_trim(icu_encode('　日本　', 'cp932'), 'cp932', '　'), 'cp932');
+-- 日本
+SELECT icu_decode(icu_rpad(icu_encode('日本', 'cp939'), 'cp939', 8, '　'), 'cp939');
+-- '日本　'（SO/SI 込みで8バイト）
+```
+
 ## 11. output と順序の仕様
 
 ### 11.1 出力元と SQL
@@ -1127,16 +1282,17 @@ SELECT cobol_to_char(0, '****.**');         -- '****.**'
 | --- | --- | --- |
 | `id` | 必須 | ログとエラーで使う出力 ID |
 | `sql` | 必須 | 出力するデータを定義する1つの SELECT 系クエリ |
-| `format` | 必須 | `csv` / `fixed` / `rdw` / `parquet` / `lua` |
+| `format` | 必須 | `csv` / `fixed` / `lines` / `rdw` / `parquet` / `lua` |
 | `path` | 任意 | 出力ファイル、または Lua 出力プラグインのパス。省略時は CLI の `--output.<id>.path` で指定する |
 | `encoding` | parquet / lua 以外で必須 | 6.5節の文字コード。parquet / lua では指定不可 |
-| `compression` | 任意 | CSV / fixed / rdw のファイル全体の `gzip` / `zstd` 圧縮。Parquet は `parquet.compression` を使用 |
+| `compression` | 任意 | CSV / fixed / lines / rdw のファイル全体の `gzip` / `zstd` 圧縮。Parquet は `parquet.compression` を使用 |
 | `mode` | 任意 | ファイルは `error_if_exists`（既定）/ `overwrite`。Lua は `append`（既定）/ `overwrite` / `merge` |
-| `fields` | fixed / rdw で必須、CSV で任意、parquet / lua で指定不可 | 項目定義の配列。CSV は name で結果列を参照し、必要な項目だけ出力設定を指定可能 |
+| `fields` | fixed / lines / rdw で必須、CSV で任意、parquet / lua で指定不可 | 項目定義の配列。CSV は name で結果列を参照し、必要な項目だけ出力設定を指定可能 |
 | `check` | 任意 | SQL 結果の各行への異常終了・ログ出力。6.8節参照 |
 | `csv` | CSV で任意 | CSV 共通設定。区切り・引用符・ヘッダー・line_ending と、quote_style の共通既定値 |
 | `fixed` | fixed で必須 | record_separator と、任意の record_length。入力と同じ設定 |
-| `rdw` | rdw で任意 | 入力と同じ RDW の上限設定 |
+| `lines` | lines で任意 | line_ending、record_length、trim_trailing_spaces。6.3.1節参照 |
+| `rdw` | rdw で任意 | 入力と同じbdw / spanned、論理レコード・ブロックの上限設定 |
 
 データの参照、列選択・列順、別名、式、型変換、WHERE、JOIN、集計、ORDER BY、LIMIT / OFFSET 等、SQL で指定できる処理はすべて `output.sql` に書く。YAML の出力設定は SQL と出力 ID、ファイル形式・保存先・文字コード・格納レイアウト等の書き出し設定とする。`output.sql` の構文、参照解決、型の規則は `process.sql` と共通とし、`process` を省略するか `process: []` として出力 SQL だけで処理を完結できる。
 
@@ -1321,7 +1477,7 @@ GROUPING SETS 等で同じ元行が複数グループの最初の行になる場
 6. YAML の出力順で、一時ファイルを tmp フォルダから最終パスへ rename / replace して公開する。
 7. 行数、バイト数、所要時間、出力先をログに記録し、一時領域を解放する。
 
-入力ファイルと同じ実体を指す出力、出力同士で同じ実体・解決先を指すパスを禁止する。相対パス、シンボリックリンク、既存ファイルのハードリンクによる衝突も検査する。出力の親ディレクトリは事前に存在する必要がある。出力自体のシンボリックリンク・reparse point は拒否する。
+入力ファイル、ジョブ YAML、import 先の YAML、Lua スクリプトと同じ実体を指す出力、出力同士で同じ実体・解決先を指すパスを禁止する。相対パス、シンボリックリンク、既存ファイルのハードリンクによる衝突も検査する。出力の親ディレクトリは事前に存在する必要がある。出力自体のシンボリックリンク・reparse point は拒否する。
 
 ### 12.2 公開の保証と限界
 
@@ -1359,7 +1515,8 @@ Linux は `renameat2`、Windows は `SetFileInformationByHandle(FileRenameInfo)`
 - CPU を使う処理の並列度は14節の `--threads` に従う。ランタイムのワーカー数と DataFusion の実行並列度に反映し、Reader / Writer の変換処理にも同じ設定で並列度を制御する。
 - Reader はデータセット番号と元レコード番号を行単位で保持し、物理計画の出力順序を正しく宣言する。ソート・並列結合・集計・UNION ALL を経た場合も順序キーを引き継ぐ。既定の元ファイル順を復元するためにソートと spill が必要になる場合がある。
 - フィルタの pushdown は初期版では対応せず、DataFusion 側で評価する。射影で不要な列の配列構築を省略できても、実際に読んだレコードの全項目は検証する。
-- CSV / fixed / rdw のバッチの目安は8,192行、アダプターのバッチ生成バッファは16 MiB とし、どちらかに達したら返す。16 MiB を超える1レコードは初期版ではエラーとする。
+- CSV / fixed / lines / rdw のバッチの目安は8,192行、アダプターのバッチ生成バッファは16 MiB とし、どちらかに達したら返す。16 MiB を超える1レコードは初期版ではエラーとする。
+- CSV の入出力とも、ヘッダーを含め、デコード後の UTF-8 表現で引用符・引用符の二重化・区切り文字・改行を含む1レコードを16 MiBまでとする。出力ではセルをバッファへ追加する前にサイズを検査し、超過時は公開せず出力エラーとする。
 - 有界バッファとバックプレッシャーを使い、同期ファイル I/O や重いデコードは非同期ランタイムを長時間占有しない場所で実行する。
 - DataFusion 用のメモリプールと spill 用ディレクトリを構成する。spill は12.2節の実行専用作業ディレクトリ内に置き、出力用の一時ファイルと同じ tmp フォルダを使う。CLI のメモリ上限の既定値は512 MiB。これは DataFusion 管理下の上限であり、プロセス全体の RSS 上限を意味しない。
 - ソート・結合・集計での spill 可否は採用バージョンと演算に依存する。メモリ・ディスク不足は明示的に失敗させ、ストリーム出力だけで全クエリが定数メモリになるとは仮定しない。[DataFusion: Configuration Settings](https://datafusion.apache.org/user-guide/configs.html)
@@ -1412,6 +1569,31 @@ dxt run job.yml --input.sales.path=sales.csv --output.details.path=details.csv
 終了コードは `0`: 成功、`2`: CLI / 設定 / レイアウト、`3`: 入力データ / 読み取り / 入力 check の異常終了、`4`: SQL 計画 / 計算 / リソース不足、`5`: 出力書き込み / 公開失敗 / 出力 check の異常終了とする。標準出力は `check` / `explain` の結果と `level: info` のメッセージ、標準エラーは実行ログと `level: warn` / `error` のメッセージに使う。
 
 実行ログにはバージョン、ジョブと import 先のパス・ハッシュ、展開結果のハッシュ、開始・終了時刻、出力ごとの行数・バイト数・所要時間を記録する。読み取り数を記録する場合はスキャン単位で数え、複数出力による再走査を入力の実件数と混同しない。
+
+### 14.1 終了コードの置換
+
+ジョブ直下の `exit_codes` に、既定の終了コードからCLIの実際の終了コードへの対応表を指定できる。`check` / `check --scan` / `explain` / `run` に共通して適用する。
+
+```yaml
+exit_codes:
+  "0": 0
+  "2": 8
+  "3": 12
+  "4": 16
+  "5": 20
+input:
+  # ...
+output:
+  # ...
+```
+
+キーは `"0"` / `"2"` / `"3"` / `"4"` / `"5"` の文字列とし、YAMLでは数字を引用する。値は0〜255の整数のみ。未知のコード、範囲外・文字列・真偽値等の値、重複キーは設定エラーとする。省略したコードは既定の値のままとし、`exit_codes` の省略や空のマップも認める。`import` とキー単位の上書きは通常のマップと同じで、展開結果のハッシュにも反映する。
+
+処理結果を確定し、出力の公開または失敗時の保護・一時ファイルの後処理を行った後、元のコードに対して対応表を1回だけ適用する。例えば `"0": 3` と `"3": 5` があっても、成功時の終了コードは3となる。成功を非ゼロへ、エラーを0へ置き換えることもできるが、内部の成否、Luaの終了処理へ渡すsuccess、エラーフェーズ、出力の公開判断は元の結果を使用する。ライブラリーAPIが返す `Error.code` 自体は置き換えない。
+
+import展開後に対応表全体を検証し、その後の設定・レイアウト検証で発生したコード2にも適用する。対応表を読み込める前のCLI引数エラー、YAML構文エラー、ファイル・importの読み込みエラー、実行基盤の初期化失敗には適用できない。対応表自体の不正は一部の置換も適用せず、既定のコード2を返す。設定読込前の `--help` / `--version` は通常どおり0となる。
+
+終了ログの `event: finish` には、CLIが返す値を `exit_code`、置換前の値を `original_exit_code` として記録する。`event: error` の `phase` は元のコードに基づく。中断も従来どおり元のコード4として扱い、対応表を読込済みならその置換を適用する。
 
 ## 15. 実装モジュール
 
@@ -1472,7 +1654,7 @@ src/
 2. SQL から前方参照を含む DAG を作り、ローカル CTE のスコープを守る。循環や未定義列が書き込み前に検出される。
 3. CSV の未引用の空フィールドを NULL、`""` を長さ0の文字列として読み書きできる。quote_style は fields の項目別設定、csv の共通設定、necessary の順で解決し、SQL 結果型を引き継いだ項目やヘッダーにも適用できる。fields の未指定・部分指定・並び順を変えた場合も SQL の列順は変わらない。NULL は両方式で未引用、非 NULL の空文字・0バイト binary は引用した空フィールドとなる。異なる列設定、独自の delimiter / quote、数値等の書式化、引用状態、1列の空行、末尾空列、埋め込み改行、引用符の二重化をバッファ分割の前後でも保持し、NULL と空文字の往復が成立する。不明・重複した列名、不正な方式・指定先は設定エラーとする。
 4. encoding_rs と jtc-utils の全ラベル・別名を解決できる。UTF-8、Shift_JIS、UTF-16LE / BE、ISO-2022-JP、JEF、富士通 EBCDIC、IBM CP930 / CP939 / CP942 / CP942C / CP943C の入出力、BOM、状態・文字をまたぐバッファ分割、変換不能のエラーを検証する。UTF-16 出力とレガシー文字コードを既知のバイト列で検証する。固定長・RDW のシフト状態の独立性、埋め文字、バイナリ数値の保持も検証する。
-5. `type` の全23種類について、独立した期待バイト列から読み書きできる。整数の符号拡張とバイト順、IEEE の4 / 8バイト、HFP の4 / 8 / BE16バイトと丸め、ゾーンの符号位置、packed / upacked / npacked の違いを検証する。
+5. `type` の全24種類について、独立した期待バイト列から読み書きできる。整数の符号拡張とバイト順、IEEE の4 / 8バイト、HFP の4 / 8 / BE16バイトと丸め、ゾーンの符号位置、packed / upacked / npacked の違いを検証する。
 6. 不適合な幅、不正な数字・ニブル・符号、短いレコード、整数・Decimal のあふれ、文字列の出力幅超過を黙って補正しない。fixed の区切りなし / LF / CRLF、末尾区切り省略、FILLER、マルチバイト文字の幅も検証する。
 7. 通常実行で全データを `collect()` せず、設定したメモリプールと有界バッファを使用する。メモリより大きいデータの走査と、spill 対応ソートを検証する。
 8. 出力用一時ファイルと spill は `--temp-dir` の実行専用ディレクトリ内に作成し、書き込み・同期完了後に出力先へ rename / replace する。異なるファイルシステム等の公開不能な構成を実行前に検出する。既存出力の保護、正常終了・エラー・中断時の自分の一時領域だけの削除も検証する。変換中・書き込み中の失敗では公開前の最終ファイルを変更せず、公開途中の失敗では部分公開の状態を正確に報告する。
@@ -1482,16 +1664,16 @@ src/
 12. 同じ入力・設定で決定的な SQL を実行したとき、行順指定の有無にかかわらず同じ出力バイト列になる。
 13. RDW の長さが異なる複数レコード、空の末尾文字列、最大長、途中で切れたヘッダー / 本体、長さ4未満、非ゼロの予約バイトを検証する。出力の RDW が自身の4バイトを含み、レイアウトの位置が本体基準であることを確認する。
 14. fixed / rdw の文字項目で、trim 後に `null_if` の完全一致と `null_if_pattern` の全体一致を OR 判定し、数値変換前に NULL を決められる。部分一致しないこと、空文字・複数行・大文字小文字、不正な正規表現、import 経由の記述元を検証する。
-15. fixed は nullable にかかわらず最終値が NULL の項目を型別既定値で補完する。全23型について、文字・日時等の pad_char と encoding、decimal の0の書式、整数・IEEE / HFP・binary の `00`、ゾーン / パック系の正符号付きゼロ、bits の NULL 子だけの false 補完と他の子の保持、後続項目の位置とレコード長を検証する。fixed の NULL 補完は入力 NULL 条件を必要とせず、通常値との区別の往復も要求しない。rdw の NULL は明示表現で往復し、未指定・二重指定、制約・表現の衝突、マルチバイト文字の幅、RDW 長を検証する。非 NULL の通常値は、入力 NULL 条件との衝突時に出力エラーとする。
+15. fixed は nullable にかかわらず最終値が NULL の項目を型別既定値で補完する。全24型について、文字・日時等の space_char と encoding、decimal の0の書式、整数・IEEE / HFP・binary の `00`、ゾーン / パック系の正符号付きゼロ、bits の NULL 子だけの false 補完と他の子の保持、後続項目の位置とレコード長を検証する。fixed の NULL 補完は入力 NULL 条件を必要とせず、通常値との区別の往復も要求しない。rdw の NULL は明示表現で往復し、未指定・二重指定、制約・表現の衝突、マルチバイト文字の幅、RDW 長を検証する。非 NULL の通常値は、入力 NULL 条件との衝突時に出力エラーとする。
 16. boolean の入力候補・出力値、日付の妥当性、時刻の範囲・精度、timestamp の UTC オフセット・IANA ゾーン・夏時間の欠落や重複・タイムゾーンなしの区別を検証する。CSV での書式指定と fixed / rdw での NULL 判定の併用も検証する。
 17. binary の固定幅・RDW の可変長末尾・CSV の hex / Base64 を往復できる。0バイトの値と NULL、文字コード変換を通らないこと、不正な符号化・幅不一致・NULL バイトとの衝突を検証する。
 18. bits は1バイト・複数バイト・8バイト超の領域を単位として読み、境界の番号0・7・8・最終ビットを msb0 / lsb0 で検証する。子名による SQL 参照・更新・CSV 出力・再組み立て、列順、範囲外や重複、未定義ビットの0埋め、NULL 領域・混在 NULL の扱いを検証する。
-19. pad_char は U+0020 / U+3000 等を指定でき、UTF-8 / UTF-16LE / BE / Shift_JIS で文字の途中を切らず幅埋め・trim できる。1文字制約、文字コードで表せない文字、幅を埋めきれない場合、rdw の NULL 表現と組み合わせた照合も検証する。
-20. datetime_pattern は CSV / fixed / rdw の入出力で Unicode の記号を一貫して解釈する。MM と mm、y と Y の区別、T と引用符のリテラル、小数秒の桁数、UTC オフセット、yy の復元範囲、曖昧な数字の配置、不正パターン、往復時の精度・バイト幅を検証する。
+19. space_char は U+0020 / U+3000 等を指定でき、UTF-8 / UTF-16LE / BE / Shift_JIS で文字の途中を切らず幅埋め・trim できる。1文字制約、文字コードで表せない文字、幅を埋めきれない場合、rdw の NULL 表現と組み合わせた照合も検証する。
+20. datetime_pattern は CSV / fixed / lines / rdw の入出力で Unicode の記号を一貫して解釈する。MM と mm、y と Y の区別、T と引用符のリテラル、小数秒の桁数、UTC オフセット、yy の復元範囲、曖昧な数字の配置、不正パターン、往復時の精度・バイト幅を検証する。
 
-21. ParquetとCSV / fixed / rdwの相互変換、スキーマ・NULL・空文字・Decimal・日時・バイナリ・リスト・構造体の保持、行グループをまたぐ元順と同順位ソート、6圧縮方式、0行ファイル、破損フッター・データページ、失敗時の既存出力の保護を検証する。
+21. ParquetとCSV / fixed / lines / rdwの相互変換、スキーマ・NULL・空文字・Decimal・日時・バイナリ・リスト・構造体の保持、行グループをまたぐ元順と同順位ソート、6圧縮方式、0行ファイル、破損フッター・データページ、失敗時の既存出力の保護を検証する。
 
-22. CSV / fixed / rdwのgzip・zstd入出力、連結メンバー／フレームをまたぐ文字コードと引用状態、圧縮前後の型・NULL・行順の保持、チェックサム不一致・途中切断・方式不一致、空データ、展開後のエラー位置、並列度によらない圧縮結果、失敗時の既存出力保護を検証する。
+22. CSV / fixed / lines / rdwのgzip・zstd入出力、連結メンバー／フレームをまたぐ文字コードと引用状態、圧縮前後の型・NULL・行順の保持、チェックサム不一致・途中切断・方式不一致、空データ、展開後のエラー位置、並列度によらない圧縮結果、失敗時の既存出力保護を検証する。
 
 型変換の基本的な期待値には次を含める。表の数値は小数桁0の場合とし、バイト列は16進数で表す。
 
@@ -1512,4 +1694,4 @@ src/
 
 ## 17. 将来の拡張
 
-encoding_rs と jtc-utils の範囲外の文字コード、BDW / spanned record、その他のファイル形式、明示的な中間結果保存、オブジェクトストレージを、既存の入力・レイアウト・出力インターフェースへ追加する。複数出力の一括公開や不正行の隔離出力は、成功・失敗の意味が変わるため個別に仕様を定義する。
+encoding_rs と jtc-utils の範囲外の文字コード、extended BDW、その他のファイル形式、明示的な中間結果保存、オブジェクトストレージを、既存の入力・レイアウト・出力インターフェースへ追加する。複数出力の一括公開や不正行の隔離出力は、成功・失敗の意味が変わるため個別に仕様を定義する。

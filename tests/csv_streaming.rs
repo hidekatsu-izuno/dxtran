@@ -27,6 +27,112 @@ fn run_with(dir: &Path, config: &Value, threads: usize, memory: &str) -> Output 
 }
 
 #[test]
+fn csv_output_record_limit_counts_escaping_delimiters_and_line_endings() {
+    const MAX: usize = 16 * 1024 * 1024;
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("tmp")).unwrap();
+    fs::write(dir.path().join("in.csv"), "n\n1\n").unwrap();
+    for threads in [1, 4] {
+        for (expression, ending, succeeds) in [
+            (format!("repeat('x', {})", MAX - 1), "lf", true),
+            (format!("repeat('x', {MAX})"), "lf", false),
+            (format!("repeat('x', {})", MAX - 2), "crlf", true),
+            (format!("repeat('x', {})", MAX - 1), "crlf", false),
+            (format!("repeat('日', {})", MAX / 3), "lf", true),
+            (format!("repeat('日', {}) || 'x'", MAX / 3), "lf", false),
+            (
+                format!("repeat(chr(34), {}) || 'x'", (MAX - 4) / 2),
+                "lf",
+                true,
+            ),
+            (format!("repeat(chr(34), {})", (MAX - 2) / 2), "lf", false),
+            (
+                format!("repeat('x', {}) AS value, 'y' AS other", MAX - 3),
+                "lf",
+                true,
+            ),
+            (
+                format!("repeat('x', {}) AS value, 'y' AS other", MAX - 2),
+                "lf",
+                false,
+            ),
+            (
+                format!(
+                    "repeat('x', {}) AS value, CAST(NULL AS VARCHAR) AS other",
+                    MAX - 2
+                ),
+                "lf",
+                true,
+            ),
+            (
+                format!(
+                    "repeat('x', {}) AS value, CAST(NULL AS VARCHAR) AS other",
+                    MAX - 1
+                ),
+                "lf",
+                false,
+            ),
+        ] {
+            fs::write(dir.path().join("out.csv"), "preserved").unwrap();
+            fs::write(dir.path().join("first.csv"), "also preserved").unwrap();
+            let sql = if expression.contains("AS value") {
+                format!("SELECT {expression} FROM data")
+            } else {
+                format!("SELECT {expression} AS value FROM data")
+            };
+            let config = json!({"input":[{"id":"data","path":"in.csv","format":"csv","encoding":"utf-8","fields":[{"name":"n"}]}],
+                "output":[
+                    {"id":"first","path":"first.csv","format":"csv","encoding":"utf-8","mode":"overwrite","sql":"SELECT * FROM data"},
+                    {"id":"result","path":"out.csv","format":"csv","encoding":"utf-8","mode":"overwrite",
+                        "csv":{"header":false,"line_ending":ending},"sql":sql}]});
+            let result = run_with(dir.path(), &config, threads, "256MiB");
+            if succeeds {
+                assert!(
+                    result.status.success(),
+                    "{expression}; {ending}: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                assert_eq!(
+                    fs::metadata(dir.path().join("out.csv")).unwrap().len(),
+                    MAX as u64
+                );
+                let columns = if expression.contains("AS value") {
+                    2
+                } else {
+                    1
+                };
+                let mut reader = dxtran::source::CsvReader::new(
+                    fs::File::open(dir.path().join("out.csv")).unwrap(),
+                    b',',
+                    b'"',
+                );
+                assert_eq!(reader.next_record().unwrap().unwrap().len(), columns);
+                assert!(reader.next_record().unwrap().is_none());
+            } else {
+                assert_eq!(
+                    result.status.code(),
+                    Some(5),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                assert!(
+                    String::from_utf8_lossy(&result.stderr).contains("CSV record exceeds 16 MiB")
+                );
+                assert_eq!(
+                    fs::read_to_string(dir.path().join("out.csv")).unwrap(),
+                    "preserved"
+                );
+                assert_eq!(
+                    fs::read_to_string(dir.path().join("first.csv")).unwrap(),
+                    "also preserved"
+                );
+            }
+            assert_eq!(fs::read_dir(dir.path().join("tmp")).unwrap().count(), 0);
+        }
+    }
+}
+
+#[test]
 fn parallel_csv_keeps_order_wide_chunks_and_compressed_bytes() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("tmp")).unwrap();

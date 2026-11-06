@@ -4,6 +4,172 @@ use jtc_utils::charset::{self, Charset};
 use std::borrow::Cow;
 use std::io::{self, Read, Write};
 
+/// A space is specified as one Unicode scalar, then used as an opaque byte
+/// sequence for binary strings. Never decode the payload merely to trim it.
+pub(crate) fn encoded_space(encoding: TextEncoding, space: &str) -> Result<Vec<u8>> {
+    if space.chars().count() != 1 {
+        return Err(Error::config("space_char must be one Unicode character"));
+    }
+    let bytes = encoding.encode(space)?;
+    if bytes.is_empty() {
+        return Err(Error::config(
+            "space_char must encode to a nonempty byte sequence",
+        ));
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn pad_binary(bytes: &[u8], width: Option<usize>, space: &[u8]) -> Result<Vec<u8>> {
+    let width = width.unwrap_or(bytes.len());
+    let padding = width
+        .checked_sub(bytes.len())
+        .ok_or_else(|| Error::output("binary string exceeds byte length"))?;
+    if padding == 0 {
+        return Ok(bytes.to_vec());
+    }
+    if space.is_empty() || !padding.is_multiple_of(space.len()) {
+        return Err(Error::output("space_char cannot fill exact byte width"));
+    }
+    let mut output = Vec::with_capacity(width);
+    output.extend_from_slice(bytes);
+    for _ in 0..padding / space.len() {
+        output.extend_from_slice(space);
+    }
+    Ok(output)
+}
+
+pub(crate) fn trim_binary<'a>(
+    mut bytes: &'a [u8],
+    pattern: &[u8],
+    left: bool,
+    right: bool,
+) -> &'a [u8] {
+    if pattern.is_empty() {
+        return bytes;
+    }
+    if left {
+        while let Some(rest) = bytes.strip_prefix(pattern) {
+            bytes = rest;
+        }
+    }
+    if right {
+        while let Some(rest) = bytes.strip_suffix(pattern) {
+            bytes = rest;
+        }
+    }
+    bytes
+}
+
+/// State-changing delimiters must be interpreted as characters: independently
+/// encoding a DBCS space includes SO/SI (or escape sequences), whereas that
+/// space inside a longer DBCS run does not have its own shift delimiters.
+pub(crate) fn shifted_pattern(encoding: TextEncoding, pattern: &[u8]) -> bool {
+    matches!(encoding.name(), "cp930" | "cp939" | "ISO-2022-JP")
+        && pattern.iter().any(|b| matches!(b, 0x0e | 0x0f | 0x1b))
+}
+
+pub(crate) fn trim_encoded(
+    bytes: &[u8],
+    pattern: &[u8],
+    encoding: TextEncoding,
+    left: bool,
+    right: bool,
+) -> Result<Vec<u8>> {
+    if !shifted_pattern(encoding, pattern) {
+        return Ok(trim_binary(bytes, pattern, left, right).to_vec());
+    }
+    let text = encoding.decode(bytes)?;
+    let pattern = encoding.decode(pattern)?;
+    if pattern.is_empty() {
+        return Err(Error::output("trim pattern must contain a character"));
+    }
+    let trimmed = if left {
+        text.trim_start_matches(pattern.as_str())
+    } else {
+        &text
+    };
+    let trimmed = if right {
+        trimmed.trim_end_matches(pattern.as_str())
+    } else {
+        trimmed
+    };
+    if trimmed == text {
+        Ok(bytes.to_vec())
+    } else {
+        encoding.encode(trimmed)
+    }
+}
+
+pub(crate) fn pad_encoded(
+    bytes: &[u8],
+    width: usize,
+    pattern: &[u8],
+    encoding: TextEncoding,
+    left: bool,
+) -> Result<Vec<u8>> {
+    let padding = width
+        .checked_sub(bytes.len())
+        .ok_or_else(|| Error::output("binary string exceeds byte length"))?;
+    if padding == 0 {
+        return Ok(bytes.to_vec());
+    }
+    if !shifted_pattern(encoding, pattern) {
+        if !left {
+            return pad_binary(bytes, Some(width), pattern);
+        }
+        let mut output = pad_binary(&[], Some(padding), pattern)?;
+        output.extend_from_slice(bytes);
+        return Ok(output);
+    }
+    let text = encoding.decode(bytes)?;
+    let pattern = encoding.decode(pattern)?;
+    if pattern.is_empty() {
+        return Err(Error::output("padding pattern must contain a character"));
+    }
+    let assemble = |count: usize| -> Result<Vec<u8>> {
+        let size = pattern
+            .len()
+            .checked_mul(count)
+            .and_then(|n| n.checked_add(text.len()))
+            .filter(|n| *n <= crate::framing::MAX_RECORD * 4)
+            .ok_or_else(|| Error::output("padding result exceeds byte limit"))?;
+        let mut joined = String::with_capacity(size);
+        if !left {
+            joined.push_str(&text);
+        }
+        for _ in 0..count {
+            joined.push_str(&pattern);
+        }
+        if left {
+            joined.push_str(&text);
+        }
+        encoding.encode(&joined)
+    };
+    let one = assemble(1)?;
+    if one.len() == width {
+        return Ok(one);
+    }
+    if one.len() > width {
+        return Err(Error::output("padding cannot fill exact byte width"));
+    }
+    let two = assemble(2)?;
+    // After the first repetition, the encoder's shift transitions repeat.
+    let step = two
+        .len()
+        .checked_sub(one.len())
+        .filter(|n| *n > 0)
+        .ok_or_else(|| Error::output("padding pattern must increase byte length"))?;
+    let rest = width - one.len();
+    if !rest.is_multiple_of(step) {
+        return Err(Error::output("padding cannot fill exact byte width"));
+    }
+    let output = assemble(1 + rest / step)?;
+    if output.len() != width {
+        return Err(Error::output("padding cannot fill exact byte width"));
+    }
+    Ok(output)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct TextEncoding(pub Charset);
 impl TextEncoding {

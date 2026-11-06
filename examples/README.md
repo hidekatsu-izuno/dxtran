@@ -1,6 +1,6 @@
 # 入出力の組み合わせサンプル
 
-固定長・CSV・RDW・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。ファイル変換は16ディレクトリに30ジョブ（正常系23、異常系7）があります。加えて、[SQLite の外部テーブル](sqlite/README.md)を LuaJIT のプラグインで読み込む例があります。
+固定長・行順編成・CSV・RDW・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。正常系と異常系のジョブをまとめて検証できます。加えて、[SQLite の外部テーブル](sqlite/README.md)を LuaJIT のプラグインで読み込む例があります。
 
 | ディレクトリ | 入力 → 出力 | 確認する内容 |
 | --- | --- | --- |
@@ -10,8 +10,11 @@
 | [csv_to_fixed](csv_to_fixed/job.yml) | CSV → 固定長 → CSV | UTF-8 日本語のバイト幅、LF、明示 offset、FILLER、右寄せ、NULL 補完、読み戻し |
 | [fixed_to_csv](fixed_to_csv/job.yml) | 固定長 → CSV / TSV | CP932 → UTF-8 / CP932、CRLF、末尾区切り省略、ASCII 符号付きゾーン10進数、正規表現による NULL 判定 |
 | [fixed_to_fixed](fixed_to_fixed/job.yml) | 固定長 → 固定長 → CSV | CP932 → UTF-16LE / UTF-8、CRLF → LF / 区切りなし、全角空白による幅埋め、UTF-16 の改行・読み戻し |
+| [lines](lines/job.yml) | 行順編成 → CSV / 行順編成 → CSV | LINE SEQUENTIAL、短い行の空白補完、空行、最終改行の省略、LF → CRLF、末尾空白の除去・保持、読み戻し |
+| [rdw_framing](rdw_framing/job.yml) | RDW → RDW / BDW / spanned → CSV | bdw / spannedの4通り、VB / VBSの入出力、文字・パック10進数を含む論理レコード、文字の途中での分割・結合、読み戻し |
 | [csv_dialects](csv_dialects/job.yml) | CSV → CSV → CSV | ヘッダーなし、セミコロン区切り、単一引用符、CP932、UTF-16LE TSV、ISO-2022-JP、BOM 付き UTF-16BE の入力 |
 | [binary_fields](binary_fields/job.yml) | 固定長 → CSV / 固定長 | 全23型、符号・エンディアン、IEEE / IBM HFP（`hfloat-le` / `hfloat-be`）、EBCDIC / ASCII ゾーン、パック10進数、ビット順の変更、生バイト一致 |
+| [bstring](bstring/job.yml) | EBCDIC 固定長 → 固定長 / RDW / CSV | 追加の24番目の型 bstring、元バイトの保持、EBCDIC のバイト順ソート、icu_decode / icu_encode による文字列との JOIN、読み戻し |
 | [csv_to_binary](csv_to_binary/job.yml) | CSV → 固定長 → CSV | 全23型の固定長出力、SQL CAST、負数・ゼロ・暗黙小数点、読み戻し |
 | [null_defaults](null_defaults/job.yml) | CSV → 固定長 | 全23型の NULL 補完バイト、NULL と true が混在するビット領域 |
 | [datetime](datetime/job.yml) | CSV → 固定長 / CSV → CSV | 2桁年の1970〜2069年への復元、ナノ秒、UTC / Asia/Tokyo、タイムゾーンなし日時、`Z` の `+0900` 表記 |
@@ -21,6 +24,7 @@
 | [compression](compression/job.yml) | gzip CSV / 固定長 → gzip / zstd → CSV | 明示したcompression、UTF-8 / CP932、NULL・空文字・Decimal・バイナリ・項目内改行、4種類の圧縮出力の読み戻し |
 | [conditional_records](conditional_records/job.yml) | 固定長 → CSV / 固定長 / RDW → CSV | SQL式の `when` によるヘッダー・明細・トレーラーの領域共有、非該当列のNULL、入出力の共通定義・読み戻し |
 | [checks](checks/job.yml) | CSV → CSV / 異常終了 | 入出力の `check`、SQL条件、warn → syserr / info → sysout、入力・出力の error による異常終了 |
+| [exit_codes](exit_codes/job.yml) | CSV → CSV / 異常終了 | exit_codesのimport、正常終了、入力エラー3→12・出力エラー5→20への置換 |
 | [errors](errors) | CSV / 固定長 → エラー | 閉じていない引用符、短い固定長レコード、文字幅超過、scale による精度喪失、CP932 に変換できない文字 |
 
 各サンプルの `data/` が入力、`expected/` が期待値、実行で生成される `out/` が出力です。固定長の `.hex` はバイト列を表示する補助ファイルです。`readback.yml` がある場合は `job.yml` の後に実行します。全23型の共通レイアウトは [layouts/all_types.yml](layouts/all_types.yml) で、1レコード132バイトです。
@@ -64,6 +68,30 @@ cmp examples/compression/expected/csv.csv examples/compression/out/csv_gzip.csv
 cmp examples/compression/expected/csv.csv examples/compression/out/csv_zstd.csv
 cmp examples/compression/expected/fixed.csv examples/compression/out/fixed_gzip.csv
 cmp examples/compression/expected/fixed.csv examples/compression/out/fixed_zstd.csv
+```
+
+## bstring で文字コードを保持する
+
+[bstring/fields.yml](bstring/fields.yml) の code は CP939 の4バイトの項目を Binary として読み、末尾のエンコード済み空白 `40` を除去します。payload は `trim: false` で2バイトをそのまま保持し、文字コードとして不正な値も含みます。[job.yml](bstring/job.yml) は入力のバイト列を固定長とRDWに戻し、code のバイト順でソートしたCSVと、UTF-8 のマスターを `icu_encode` して照合したCSVを作ります。ソート結果は `a` → `A` → `0` です。
+
+```sh
+mkdir -p examples/bstring/out
+target/debug/dxt run examples/bstring/job.yml
+cmp examples/bstring/expected/records.dat examples/bstring/out/records.dat
+cmp examples/bstring/expected/sorted.csv examples/bstring/out/sorted.csv
+cmp examples/bstring/expected/joined.csv examples/bstring/out/joined.csv
+target/debug/dxt run examples/bstring/readback.yml
+cmp examples/bstring/expected/readback.csv examples/bstring/out/fixed_readback.csv
+cmp examples/bstring/expected/readback.csv examples/bstring/out/rdw_readback.csv
+```
+
+文字列へ変換する場合は `icu_decode(code, 'cp939')`、固定幅のバイト列へ変換する場合は `icu_encode(text, 'cp939', 4)` とします。長さは文字数ではなく、指定文字コード上のバイト数です。両方の関数とも末尾空白を保持します。`space_char` は1文字を指定し、bstring ではエンコードしたバイト列で trim・padding します。旧 `pad_char` は使用できません。
+
+[fullwidth.yml](bstring/fullwidth.yml) は CP932・JEF・UTF-16LE / BE・CP930 / CP939・ISO-2022-JP の7種類で「　日本　」をバイナリへ変換し、全角空白で trim した後、全角空白を使って12バイトまで埋めます。出力には元バイト数、trim 後と padding 後の文字列、padding 後のバイト数を含めます。シフト制御を持つ文字コードでも、そのバイトを含めた長さが12になることを検証します。
+
+```sh
+target/debug/dxt run examples/bstring/fullwidth.yml
+cmp examples/bstring/expected/fullwidth.csv examples/bstring/out/fullwidth.csv
 ```
 
 ## レコード条件で項目定義を切り替える

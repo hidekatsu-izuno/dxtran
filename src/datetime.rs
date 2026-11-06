@@ -608,6 +608,32 @@ impl Pattern {
                 }
             }
         }
+        let restored = self.parse(&out).map_err(|e| {
+            Error::output(format!(
+                "datetime output cannot be read back with the same settings: {}; ambiguous timestamps require an offset pattern such as XXX",
+                e.message
+            ))
+        })?;
+        // Compare values in a common unit, allowing a different display zone.
+        // i128 also covers timestamps outside the nanosecond i64 range.
+        fn normalized(v: &ScalarValue) -> Option<(u8, i128)> {
+            let (kind, value, scale) = match v {
+                ScalarValue::Date32(Some(v)) => (0, i128::from(*v), 1),
+                ScalarValue::Time64Microsecond(Some(v)) => (1, i128::from(*v), 1000),
+                ScalarValue::Time64Nanosecond(Some(v)) => (1, i128::from(*v), 1),
+                ScalarValue::TimestampSecond(Some(v), _) => (2, i128::from(*v), 1_000_000_000),
+                ScalarValue::TimestampMillisecond(Some(v), _) => (2, i128::from(*v), 1_000_000),
+                ScalarValue::TimestampMicrosecond(Some(v), _) => (2, i128::from(*v), 1000),
+                ScalarValue::TimestampNanosecond(Some(v), _) => (2, i128::from(*v), 1),
+                _ => return None,
+            };
+            Some((kind, value * scale))
+        }
+        if normalized(v) != normalized(&restored) {
+            return Err(Error::output(
+                "datetime pattern would change the value when read back",
+            ));
+        }
         Ok(out)
     }
 }
@@ -647,6 +673,53 @@ mod tests {
         let p = Pattern::compile(&f, "timestamp").unwrap();
         assert!(p.parse("2026-11-01 01:30:00").is_err());
         assert!(p.parse("2026-03-08 02:30:00").is_err());
+        for utc in ["2026-11-01T05:30:00Z", "2026-11-01T06:30:00Z"] {
+            let instant = chrono::DateTime::parse_from_rfc3339(utc).unwrap();
+            let value = ScalarValue::TimestampSecond(Some(instant.timestamp()), Some("UTC".into()));
+            let error = p.format(&value).unwrap_err();
+            assert_eq!(error.code, 5);
+            assert!(error.message.contains("XXX"));
+            f.datetime_pattern = Some("yyyy-MM-dd HH:mm:ssXXX".into());
+            let offset = Pattern::compile(&f, "timestamp").unwrap();
+            assert_eq!(
+                offset.format(&value).unwrap(),
+                if utc.contains("05:30") {
+                    "2026-11-01 01:30:00-04:00"
+                } else {
+                    "2026-11-01 01:30:00-05:00"
+                }
+            );
+        }
+    }
+    #[test]
+    fn roundtrip_normalizes_units_and_display_zones() {
+        let mut field = f("yyyy-MM-dd HH:mm:ss.SSSXXX");
+        field.timezone_set = true;
+        field.timezone = Some("Asia/Tokyo".into());
+        field.unit = Some("ms".into());
+        let p = Pattern::compile(&field, "timestamp").unwrap();
+        assert_eq!(
+            p.format(&ScalarValue::TimestampMicrosecond(
+                Some(-1_000),
+                Some("UTC".into())
+            ))
+            .unwrap(),
+            "1970-01-01 08:59:59.999+09:00"
+        );
+        let p = Pattern::compile(&f("HH:mm:ss.SSSSSS"), "time").unwrap();
+        assert_eq!(
+            p.format(&ScalarValue::Time64Nanosecond(Some(1_000)))
+                .unwrap(),
+            "00:00:00.000001"
+        );
+        // Delimited years can exceed four digits and must remain representable.
+        let p = Pattern::compile(&f("yyyy-MM-dd"), "date").unwrap();
+        let date = NaiveDate::from_ymd_opt(10000, 1, 1).unwrap();
+        let days = (date - NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()).num_days() as i32;
+        assert_eq!(
+            p.format(&ScalarValue::Date32(Some(days))).unwrap(),
+            "10000-01-01"
+        );
     }
     #[test]
     fn rfc822_offsets_always_include_hours_and_minutes_without_colons() {

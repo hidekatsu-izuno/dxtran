@@ -69,7 +69,7 @@ enum Operation {
     Run,
 }
 
-async fn execute(cli: Cli, run_id: &str) -> Result<()> {
+async fn execute(cli: Cli, run_id: &str, exit_codes: &mut config::ExitCodes) -> Result<()> {
     let (path, resources, operation) = match cli.command {
         Command::Check {
             job,
@@ -79,7 +79,7 @@ async fn execute(cli: Cli, run_id: &str) -> Result<()> {
         Command::Explain { job, resources } => (job, resources, Operation::Explain),
         Command::Run { job, resources } => (job, resources, Operation::Run),
     };
-    let mut job = config::load_with_paths(&path, &cli.paths)?;
+    let mut job = config::load_with_paths_and_exit_codes(&path, &cli.paths, exit_codes)?;
     if cli.allow_lua {
         job.allow_unsafe_lua();
     }
@@ -273,18 +273,20 @@ pub fn main_cli() -> i32 {
             return 4;
         }
     };
-    let result=runtime.block_on(async {tokio::select! {biased;_=signal_rx=>Err(Error::sql("interrupted")),result=execute(cli,&run_id)=>result}});
+    let mut exit_codes = config::ExitCodes::default();
+    let result=runtime.block_on(async {tokio::select! {biased;_=signal_rx=>Err(Error::sql("interrupted")),result=execute(cli,&run_id,&mut exit_codes)=>result}});
     drop(signals);
-    let code = match result {
+    let original_code = match result {
         Ok(()) => 0,
         Err(e) => {
             log(json!({"event":"error","run_id":run_id,"phase":phase(e.code),"message":e.message}));
-            i32::from(e.code)
+            e.code
         }
     };
+    let code = i32::from(exit_codes.resolve(original_code));
     runtime.shutdown_timeout(std::time::Duration::from_secs(5));
     log(
-        json!({"event":"finish","run_id":run_id,"time":chrono::Utc::now().to_rfc3339(),"seconds":start.elapsed().as_secs_f64(),"exit_code":code}),
+        json!({"event":"finish","run_id":run_id,"time":chrono::Utc::now().to_rfc3339(),"seconds":start.elapsed().as_secs_f64(),"exit_code":code,"original_exit_code":original_code}),
     );
     code
 }

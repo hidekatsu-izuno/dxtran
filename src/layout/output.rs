@@ -66,13 +66,16 @@ impl RecordLayout {
                     Timestamp => {
                         matches!(t,DataType::Timestamp(_,z) if z.is_some()==matches!(f.data_type(),DataType::Timestamp(_,Some(_))))
                     }
-                    Binary => matches!(
+                    Binary | Bstring => matches!(
                         t,
                         DataType::Binary
                             | DataType::BinaryView
                             | DataType::LargeBinary
                             | DataType::FixedSizeBinary(_)
                     ),
+                    IntLe | IntBe | UintLe | UintBe if f.scaled_integer() => {
+                        matches!(t, DataType::Decimal128(_, _))
+                    }
                     IntLe | IntBe | UintLe | UintBe => t.is_integer(),
                     FloatLe | FloatBe | HfloatLe | HfloatBe => {
                         matches!(t, DataType::Float32 | DataType::Float64)

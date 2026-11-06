@@ -1,0 +1,45 @@
+input:
+  - id: records
+    format: rdw
+    path: data/records.rdw
+    encoding: utf-8
+    fields: {import: fields.yml}
+output:
+  - id: csv
+    sql: SELECT * FROM records
+    format: csv
+    path: out/records.csv
+    mode: overwrite
+    encoding: utf-8
+  - id: plain
+    sql: SELECT * FROM records
+    format: rdw
+    path: out/records.rdw
+    mode: overwrite
+    encoding: utf-8
+    rdw: {bdw: false, spanned: false}
+    fields: {import: fields.yml}
+  - id: blocked
+    sql: SELECT * FROM records
+    format: rdw
+    path: out/records.vb
+    mode: overwrite
+    encoding: utf-8
+    rdw: {bdw: true, spanned: false, max_block_length: 24}
+    fields: {import: fields.yml}
+  - id: spanned
+    sql: SELECT * FROM records
+    format: rdw
+    path: out/records.vbs
+    mode: overwrite
+    encoding: utf-8
+    rdw: {bdw: true, spanned: true, max_block_length: 16}
+    fields: {import: fields.yml}
+  - id: segments
+    sql: SELECT * FROM records
+    format: rdw
+    path: out/records.sdw
+    mode: overwrite
+    encoding: utf-8
+    rdw: {bdw: false, spanned: true}
+    fields: {import: fields.yml}

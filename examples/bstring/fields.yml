@@ -1,0 +1,2 @@
+- {name: code, type: bstring, length: 4}
+- {name: payload, type: bstring, length: 2, trim: false}

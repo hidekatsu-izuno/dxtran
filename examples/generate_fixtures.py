@@ -81,6 +81,31 @@ def fixtures():
            "".join(name + "　" * ((12 - len(name.encode())) // 3) for name in names).encode())
     put("fixed_to_fixed/expected/readback.csv", 'label\n東京\n大阪\n""\n')
 
+    put("lines/data/records.txt", "01Alice\n02Bob\n03\n\n04Carol")
+    put("lines/expected/records.txt", "01Alice\r\n02Bob\r\n03\r\n\r\n04Carol\r\n")
+    put("lines/expected/padded.txt", "".join(
+        record.ljust(10) + "\n" for record in ["01Alice", "02Bob", "03", "", "04Carol"]))
+    put("lines/expected/records.csv", 'code,name\n01,Alice\n02,Bob\n03,""\n  ,""\n04,Carol\n')
+
+    rdw_bodies = [b"01\x12\x3c" + "日本語".encode(), b"02\x04\x5dABC", b"03\x00\x0c"]
+
+    def segment(flag, body):
+        return struct.pack(">HBB", len(body) + 4, flag, 0) + body
+
+    def block(*segments):
+        return segment(0, b"".join(segments))
+
+    plain = b"".join(segment(0, body) for body in rdw_bodies)
+    binary("rdw_framing/data/records.rdw", plain)
+    binary("rdw_framing/expected/records.rdw", plain)
+    binary("rdw_framing/expected/records.vb", block(segment(0, rdw_bodies[0]))
+           + block(segment(0, rdw_bodies[1]), segment(0, rdw_bodies[2])))
+    # max_block_length=16: split the first record inside the second UTF-8 character.
+    binary("rdw_framing/expected/records.vbs", block(segment(1, rdw_bodies[0][:8]))
+           + block(segment(2, rdw_bodies[0][8:]))
+           + block(segment(0, rdw_bodies[1])) + block(segment(0, rdw_bodies[2])))
+    put("rdw_framing/expected/records.csv", 'code,amount,note\n01,123,日本語\n02,-45,ABC\n03,0,""\n')
+
     put("csv_dialects/data/names.csv", "0002;'東京;本店'\r\n0001;'O''Brien'\r\n0003;大阪", "cp932")
     canonical = "id,label\n0002,東京;本店\n0001,O'Brien\n0003,大阪\n"
     put("csv_dialects/data/names_utf16be.csv", b"\xfe\xff" + canonical.encode("utf-16be"))
@@ -196,6 +221,27 @@ def fixtures():
         "T,,,,,2,11.80\n")
     put("checks/data/records.csv", "id,amount\nA001,12.30\nA002,-0.50\nA003,\n")
     put("checks/expected/records.csv", "id,amount\nA001,24.60\nA002,-1.00\nA003,\n")
+    put("exit_codes/data/records.csv", "id,amount\nA001,12.30\nA002,-0.50\n")
+    put("exit_codes/expected/records.csv", "id,amount\nA001,12.30\nA002,-0.50\n")
+    # Known EBCDIC bytes, including payloads that need not be valid text.
+    bstrings = [bytes.fromhex(value) for value in [
+        "f0404040ff00", "c140404000ff", "814040400e45"]]
+    binary("bstring/data/records.dat", b"".join(bstrings))
+    put("bstring/data/lookup.csv", "code,label\nA,大文字\na,小文字\n0,数字\n")
+    binary("bstring/expected/records.dat", b"".join(bstrings))
+    binary("bstring/expected/records.rdw", b"".join(
+        struct.pack(">H", len(record) + 4) + b"\x00\x00" + record for record in bstrings))
+    put("bstring/expected/sorted.csv", "code_text,payload\na,0e45\nA,00ff\n0,ff00\n")
+    put("bstring/expected/joined.csv", "code_text,label,payload\na,小文字,0e45\nA,大文字,00ff\n0,数字,ff00\n")
+    put("bstring/expected/readback.csv", "code,payload\nf0,ff00\nc1,00ff\n81,0e45\n")
+    fullwidth = [("cp932", 8, 4), ("jef", 8, 4), ("utf-16le", 8, 4),
+                 ("utf-16be", 8, 4), ("cp930", 10, 3), ("cp939", 10, 3),
+                 ("iso-2022-jp", 14, 1)]
+    put("bstring/data/labels.csv", "encoding,label\n" + "".join(
+        f"{encoding},　日本　\n" for encoding, _, _ in fullwidth))
+    put("bstring/expected/fullwidth.csv", "encoding,original_bytes,trimmed,padded,padded_bytes\n" + "".join(
+        f"{encoding},{original},日本,日本{'　' * padding},12\n"
+        for encoding, original, padding in fullwidth))
     return files
 
 
@@ -204,6 +250,21 @@ def manifest():
         return {"file": file, "outputs": {"out/" + name: "expected/" + name for name in outputs}}
 
     cases = [
+        ("exit_codes", [job("job.yml", "records.csv"),
+            {"file": "input_error.yml", "exit_code": 12, "scan_exit_code": 12,
+             "diagnostic": "入力金額が負のため終了コード12で終了します。", "absent": ["out/input_error.csv"]},
+            {"file": "output_error.yml", "exit_code": 20,
+             "diagnostic": "出力金額が負のため終了コード20で終了します。", "absent": ["out/output_error.csv"]}]),
+        ("rdw_framing", [
+            {"file": "job.yml", "outputs": {
+                "out/records.csv": "expected/records.csv", "out/records.rdw": "expected/records.rdw",
+                "out/records.vb": "expected/records.vb", "out/records.vbs": "expected/records.vbs",
+                "out/records.sdw": "expected/records.rdw"}},
+            {"file": "readback.yml", "outputs": {
+                "out/plain.csv": "expected/records.csv", "out/blocked.csv": "expected/records.csv",
+                "out/spanned.csv": "expected/records.csv", "out/segments.csv": "expected/records.csv"}}]),
+        ("lines", [job("job.yml", "records.csv", "records.txt", "padded.txt"),
+            {"file": "readback.yml", "outputs": {"out/readback.csv": "expected/records.csv"}}]),
         ("csv_to_csv", [job("job.yml", "canonical.csv", "records.tsv")]),
         ("csv_to_fixed", [job("job.yml", "records.dat"), job("readback.yml", "readback.csv")]),
         ("fixed_to_csv", [job("job.yml", "sales.csv", "sales_cp932.tsv")]),
@@ -236,6 +297,11 @@ def manifest():
              "diagnostic": "入力金額が負のため異常終了します。", "absent": ["out/input_abend.csv"]},
             {"file": "output_abend.yml", "exit_code": 5,
              "diagnostic": "変換後の金額が負のため異常終了します。", "absent": ["out/output_abend.csv"]}]),
+        ("bstring", [job("job.yml", "records.dat", "records.rdw", "sorted.csv", "joined.csv"),
+            job("fullwidth.yml", "fullwidth.csv"),
+            {"file": "readback.yml", "outputs": {
+                "out/fixed_readback.csv": "expected/readback.csv",
+                "out/rdw_readback.csv": "expected/readback.csv"}}]),
     ]
     errors = []
     for file, code, scan, diagnostic, absent in [

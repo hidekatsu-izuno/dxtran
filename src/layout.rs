@@ -20,6 +20,7 @@ pub struct RecordLayout {
     pub max_record_length: usize,
     pub format: Format,
     pub encoding: TextEncoding,
+    pub(crate) lines: Option<crate::framing::lines::LineFraming>,
     pub(crate) conditional: Option<conditional::ConditionalLayout>,
     pub(crate) checks: crate::check::Checks,
 }
@@ -48,7 +49,7 @@ impl RecordLayout {
         if d.format == Format::Parquet {
             if d.compression.is_some() {
                 return Err(Error::config(
-                    "top-level compression is for csv/fixed/rdw; use parquet.compression for Parquet output",
+                    "top-level compression is for csv/fixed/lines/rdw; use parquet.compression for Parquet output",
                 ));
             }
             return crate::parquet_io::layout(d, result);
@@ -56,6 +57,7 @@ impl RecordLayout {
         let encoding = TextEncoding::resolve(&d.encoding)?;
         if (d.csv.is_some() && d.format != Format::Csv)
             || (d.fixed.is_some() && d.format != Format::Fixed)
+            || (d.lines.is_some() && d.format != Format::Lines)
             || (d.rdw.is_some() && d.format != Format::Rdw)
             || d.parquet.is_some()
         {
@@ -90,10 +92,9 @@ impl RecordLayout {
         {
             return Err(Error::config("invalid or output-only CSV option"));
         }
-        let max = d.rdw.as_ref().map(|r| r.max_record_length).unwrap_or(32760);
-        if !(4..=65535).contains(&max) {
-            return Err(Error::config("rdw.max_record_length must be 4..65535"));
-        }
+        let rdw = d.rdw.clone().unwrap_or_default();
+        rdw.validate()?;
+        let max = rdw.record_limit();
         let separator = if d.format == Format::Fixed {
             let fixed = d
                 .fixed
@@ -193,6 +194,7 @@ impl RecordLayout {
             return Err(Error::config("record length outside supported range"));
         }
         let schema = Arc::new(Schema::new(columns));
+        let lines = Self::line_framing(d, encoding, length, &fields)?;
         let layout = Self {
             fields,
             schema,
@@ -202,6 +204,7 @@ impl RecordLayout {
             max_record_length: max,
             format: d.format,
             encoding,
+            lines,
             conditional: None,
             checks: Default::default(),
         };
@@ -209,6 +212,30 @@ impl RecordLayout {
             layout.validate_output(d, &result)?;
         }
         Ok(layout)
+    }
+
+    pub(super) fn line_framing(
+        d: &Dataset,
+        encoding: TextEncoding,
+        length: usize,
+        fields: &[CompiledField],
+    ) -> Result<Option<crate::framing::lines::LineFraming>> {
+        if d.format != Format::Lines {
+            return Ok(None);
+        }
+        let options = d.lines.clone().unwrap_or_default();
+        if length == 0 || options.record_length.is_some_and(|n| n != length) {
+            return Err(Error::config(
+                "lines.record_length must equal the positive, fully covered layout length",
+            ));
+        }
+        let lines = crate::framing::lines::LineFraming::new(encoding, &options)?;
+        lines.validate_width(length)?;
+        for field in fields {
+            lines.validate_width(field.offset)?;
+            lines.validate_width(field.length.unwrap())?;
+        }
+        Ok(Some(lines))
     }
 }
 
@@ -222,7 +249,7 @@ mod tests {
             Field {
                 name: Some("name".into()),
                 length: Some(Length::Fixed(8)),
-                pad_char: Some("　".into()),
+                space_char: Some("　".into()),
                 ..Default::default()
             },
             Format::Fixed,

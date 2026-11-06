@@ -1,0 +1,9 @@
+import: job.yml
+output:
+  - id: copied
+    sql: SELECT * FROM records
+    format: csv
+    path: out/output_error.csv
+    mode: overwrite
+    encoding: utf-8
+    check: {when: 'amount < 0', level: error, message: '出力金額が負のため終了コード20で終了します。'}

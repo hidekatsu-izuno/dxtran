@@ -219,14 +219,18 @@ pub fn rescale(v: i128, from: i32, to: i32) -> Result<i128> {
         Err(overflow())
     }
 }
-pub fn parse_decimal(s: &str, p: u8, scale: u8) -> Result<i128> {
+pub fn parse_decimal(s: &str, p: u8, scale: impl Into<i32>) -> Result<i128> {
     let bad =
         || Error::input("invalid decimal, precision overflow or nonzero excess fractional digits");
+    let scale = scale.into();
+    if !(-38..=255).contains(&scale) {
+        return Err(bad());
+    }
     let neg = s.starts_with('-');
     let s = s.strip_prefix(['-', '+']).unwrap_or(s);
     let mut parts = s.split('.');
-    let integer = parts.next().unwrap();
-    let fraction = parts.next().unwrap_or("");
+    let mut integer = parts.next().unwrap();
+    let mut fraction = parts.next().unwrap_or("");
     if parts.next().is_some()
         || integer.is_empty()
         || !integer.bytes().all(|c| c.is_ascii_digit())
@@ -234,16 +238,25 @@ pub fn parse_decimal(s: &str, p: u8, scale: u8) -> Result<i128> {
     {
         return Err(bad());
     }
-    let excess = fraction.get(scale as usize..).unwrap_or("");
+    if scale < 0 {
+        let split = integer.len().saturating_sub(scale.unsigned_abs() as usize);
+        if !fraction.bytes().all(|c| c == b'0') || !integer[split..].bytes().all(|c| c == b'0') {
+            return Err(bad());
+        }
+        integer = &integer[..split];
+        fraction = "";
+    }
+    let scale = scale.max(0) as usize;
+    let excess = fraction.get(scale..).unwrap_or("");
     if !excess.bytes().all(|c| c == b'0') {
         return Err(bad());
     }
-    let fraction = &fraction[..fraction.len().min(scale as usize)];
+    let fraction = &fraction[..fraction.len().min(scale)];
     let mut value = 0i128;
     for c in integer
         .bytes()
         .chain(fraction.bytes())
-        .chain(std::iter::repeat_n(b'0', scale as usize - fraction.len()))
+        .chain(std::iter::repeat_n(b'0', scale - fraction.len()))
     {
         value = value
             .checked_mul(10)
@@ -253,14 +266,14 @@ pub fn parse_decimal(s: &str, p: u8, scale: u8) -> Result<i128> {
     check_precision(value, p).map_err(|_| bad())?;
     Ok(if neg { -value } else { value })
 }
-pub fn decimal_text(v: i128, scale: u8) -> String {
+pub fn decimal_text(v: i128, scale: impl Into<i32>) -> String {
     let mut out = String::new();
     decimal_text_into(v, scale, &mut out);
     out
 }
-pub(crate) fn decimal_text_into(v: i128, scale: u8, out: &mut String) {
-    // The public formatter accepts any u8 scale; SQL Decimal128 uses at most 38.
-    let mut digits = [b'0'; 256];
+pub(crate) fn decimal_text_into(v: i128, scale: impl Into<i32>, out: &mut String) {
+    let scale = scale.into();
+    let mut digits = [b'0'; 39];
     let mut start = digits.len();
     let mut n = v.unsigned_abs();
     loop {
@@ -270,17 +283,26 @@ pub(crate) fn decimal_text_into(v: i128, scale: u8, out: &mut String) {
             break;
         }
     }
-    start = start.min(digits.len() - usize::from(scale) - 1);
     let digits = std::str::from_utf8(&digits[start..]).expect("ASCII digits");
     if v < 0 {
         out.push('-');
     }
-    if scale == 0 {
+    if scale <= 0 {
         out.push_str(digits);
+        if v != 0 {
+            out.extend(std::iter::repeat_n('0', scale.unsigned_abs() as usize));
+        }
     } else {
-        let i = digits.len() - scale as usize;
-        out.push_str(&digits[..i]);
-        out.push('.');
-        out.push_str(&digits[i..]);
+        let scale = scale as usize;
+        if scale >= digits.len() {
+            out.push_str("0.");
+            out.extend(std::iter::repeat_n('0', scale - digits.len()));
+            out.push_str(digits);
+        } else {
+            let i = digits.len() - scale;
+            out.push_str(&digits[..i]);
+            out.push('.');
+            out.push_str(&digits[i..]);
+        }
     }
 }

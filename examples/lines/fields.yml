@@ -1,0 +1,2 @@
+- {name: code, length: 2, trim: false}
+- {name: name, length: 8}

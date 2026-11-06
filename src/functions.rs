@@ -1,5 +1,7 @@
-//! SQL functions for COBOL numeric editing and ICU4X Unicode datetimes.
+//! SQL functions for numeric editing, character encodings, and ICU4X datetimes.
+mod charset;
 mod cobol;
+mod encoded;
 
 use crate::{
     config::Field as FieldConfig,
@@ -27,6 +29,8 @@ use std::collections::HashMap;
 /// Register dxtran's SQL functions in a DataFusion session.
 pub fn register(context: &SessionContext) {
     cobol::register(context);
+    charset::register(context);
+    encoded::register(context);
     for kind in [Kind::Char, Kind::Date, Kind::Timestamp, Kind::Time] {
         context.register_udf(ScalarUDF::from(IcuFunction {
             kind,

@@ -1,0 +1,26 @@
+input:
+  - id: fixed_copy
+    format: fixed
+    path: out/records.dat
+    encoding: cp939
+    fixed: {record_separator: none}
+    fields: {import: ./fields.yml}
+  - id: rdw_copy
+    format: rdw
+    path: out/records.rdw
+    encoding: cp939
+    rdw: {}
+    fields: {import: ./fields.yml}
+output:
+  - id: fixed_readback
+    format: csv
+    path: out/fixed_readback.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: SELECT * FROM fixed_copy
+  - id: rdw_readback
+    format: csv
+    path: out/rdw_readback.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: SELECT * FROM rdw_copy

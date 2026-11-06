@@ -48,6 +48,125 @@ fn check(queries: &[(&str, &str)]) {
 }
 
 #[test]
+fn multiset_operations_count_values_through_constants_expressions_and_nested_sets() {
+    use std::collections::BTreeMap;
+    fn counts<'a>(rows: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usize> {
+        let mut counts = BTreeMap::new();
+        for row in rows {
+            *counts.entry(row).or_default() += 1;
+        }
+        counts
+    }
+    let d = setup();
+    fs::write(
+        d.path().join("a.csv"),
+        "id,k,v\nr1,x,1\nr2,x,1\nr3,y,2\nr4,,3\nr5,,3\n",
+    )
+    .unwrap();
+    fs::write(d.path().join("b.csv"), "k,v\nx,1\n,3\n").unwrap();
+    let cases: &[(&str, &[&str])] = &[
+        (
+            "SELECT k FROM a EXCEPT ALL SELECT 'x' AS k",
+            &["x", "y", "", ""],
+        ),
+        ("SELECT k FROM a INTERSECT ALL SELECT 'x' AS k", &["x"]),
+        (
+            "SELECT upper(k) AS k FROM a EXCEPT ALL SELECT upper(k) AS k FROM b",
+            &["X", "Y", ""],
+        ),
+        (
+            "SELECT upper(k) AS k FROM a INTERSECT ALL SELECT upper(k) AS k FROM b",
+            &["X", ""],
+        ),
+        (
+            "SELECT k FROM a EXCEPT ALL SELECT k FROM b",
+            &["x", "y", ""],
+        ),
+        ("SELECT k FROM a INTERSECT ALL SELECT k FROM b", &["x", ""]),
+        (
+            "(SELECT k FROM a EXCEPT ALL SELECT k FROM b WHERE false) INTERSECT SELECT 'x' AS k",
+            &["x"],
+        ),
+        (
+            "(SELECT k FROM a INTERSECT ALL SELECT k FROM a) EXCEPT SELECT 'x' AS k",
+            &["y", ""],
+        ),
+        (
+            "(SELECT k FROM a EXCEPT ALL SELECT k FROM b) INTERSECT ALL SELECT k FROM b",
+            &["x", ""],
+        ),
+        (
+            "SELECT k FROM a EXCEPT ALL (SELECT k FROM a INTERSECT ALL SELECT k FROM b)",
+            &["x", "y", ""],
+        ),
+        (
+            "WITH t AS (SELECT k FROM a EXCEPT ALL SELECT k FROM b) SELECT k FROM t INTERSECT SELECT k FROM t",
+            &["x", "y", ""],
+        ),
+        (
+            "SELECT k FROM a INTERSECT ALL SELECT k FROM b WHERE false",
+            &[],
+        ),
+        (
+            "SELECT k FROM a INTERSECT ALL SELECT CAST(NULL AS VARCHAR) AS k",
+            &[""],
+        ),
+        ("SELECT k FROM a INTERSECT ALL SELECT '' AS k", &[]),
+        (
+            "SELECT k FROM a EXCEPT ALL VALUES ('x'), ('x'), ('x')",
+            &["y", "", ""],
+        ),
+        (
+            "SELECT k, v FROM a EXCEPT ALL SELECT 'x' AS k, CAST(1 AS DECIMAL(4,0)) AS v",
+            &["x,1", "y,2", ",3", ",3"],
+        ),
+    ];
+    for (sql, expected) in cases {
+        for threads in [1, 4] {
+            let result = run(d.path(), sql, threads);
+            assert!(
+                result.status.success(),
+                "{sql}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let output = fs::read_to_string(d.path().join("out.csv")).unwrap();
+            assert_eq!(
+                counts(output.lines().skip(1)),
+                counts(expected.iter().copied()),
+                "{sql}; threads {threads}"
+            );
+        }
+    }
+}
+
+#[test]
+fn multiset_markers_survive_process_views_and_repeated_references() {
+    let d = setup();
+    let config = json!({"input":[
+        {"id":"a","path":"a.csv","format":"csv","encoding":"utf-8","fields":[{"name":"id"},{"name":"k","nullable":true},{"name":"v","type":"decimal","precision":4,"nullable":true}]}],
+        "process":[{"id":"remaining","sql":"SELECT k FROM a EXCEPT ALL SELECT 'b' AS k"}],
+        "output":[{"id":"result","sql":"SELECT k FROM remaining INTERSECT SELECT k FROM remaining","path":"out.csv","format":"csv","encoding":"utf-8","mode":"overwrite"}]});
+    fs::write(d.path().join("job.yml"), config.to_string()).unwrap();
+    for threads in ["1", "4"] {
+        let result = Command::new(env!("CARGO_BIN_EXE_dxt"))
+            .arg("run")
+            .arg(d.path().join("job.yml"))
+            .args(["--threads", threads])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(d.path().join("out.csv")).unwrap(),
+            "k\nb\na\nc\n\n"
+        );
+    }
+}
+
+#[test]
 fn expression_subqueries_keep_outer_order_and_null_semantics() {
     check(&[
         (

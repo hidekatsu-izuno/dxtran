@@ -1,0 +1,14 @@
+exit_codes: {import: exit_codes.yml}
+input:
+  - id: records
+    format: csv
+    path: data/records.csv
+    encoding: utf-8
+    fields: {import: fields.yml}
+output:
+  - id: copied
+    sql: SELECT * FROM records
+    format: csv
+    path: out/records.csv
+    mode: overwrite
+    encoding: utf-8

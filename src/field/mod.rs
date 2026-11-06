@@ -27,6 +27,14 @@ impl Trim {
             Self::Both => text.trim_matches(pad),
         }
     }
+    fn apply_bytes<'a>(self, bytes: &'a [u8], space: &[u8]) -> &'a [u8] {
+        crate::encoding::trim_binary(
+            bytes,
+            space,
+            matches!(self, Self::Left | Self::Both),
+            matches!(self, Self::Right | Self::Both),
+        )
+    }
 }
 
 use crate::{
@@ -47,6 +55,7 @@ pub enum FieldType {
     Time,
     Timestamp,
     Binary,
+    Bstring,
     Bits,
     IntLe,
     IntBe,
@@ -75,6 +84,7 @@ impl FieldType {
             "time" => Self::Time,
             "timestamp" => Self::Timestamp,
             "binary" => Self::Binary,
+            "bstring" => Self::Bstring,
             "bits" => Self::Bits,
             "int-le" => Self::IntLe,
             "int-be" => Self::IntBe,
@@ -118,6 +128,12 @@ impl FieldType {
                 | Self::Npacked
         )
     }
+    pub(crate) fn integer(self) -> bool {
+        matches!(
+            self,
+            Self::IntLe | Self::IntBe | Self::UintLe | Self::UintBe
+        )
+    }
     fn little(self) -> bool {
         matches!(
             self,
@@ -131,10 +147,13 @@ pub struct CompiledField {
     pub(crate) kind: FieldType,
     pub(crate) offset: usize,
     pub(crate) length: Option<usize>,
+    // Precision of the stored coefficient, excluding COBOL P positions.
     pub(crate) precision: u8,
-    pub(crate) scale: u8,
+    pub(crate) scale: i8,
     pub(crate) encoding: TextEncoding,
     pub(crate) pad: char,
+    pub(crate) space_bytes: Vec<u8>,
+    pub(crate) null_text_bytes: Vec<Vec<u8>>,
     pub(crate) trim: Trim,
     pub(crate) null_bytes: Option<Vec<u8>>,
     pub(crate) null_regex: Option<Regex>,
@@ -174,8 +193,12 @@ impl CompiledField {
     pub fn kind(&self) -> FieldType {
         self.kind
     }
+    /// SQL precision, including fractional positions omitted from storage.
     pub fn precision(&self) -> u8 {
-        self.precision
+        self.precision.max(self.scale.max(0) as u8)
+    }
+    pub(crate) fn scaled_integer(&self) -> bool {
+        self.kind.integer() && self.spec.scale.is_some()
     }
     pub fn offset(&self) -> usize {
         self.offset
@@ -197,14 +220,17 @@ impl CompiledField {
     }
     pub fn data_type(&self) -> DataType {
         use FieldType::*;
+        if self.scaled_integer() {
+            return DataType::Decimal128(self.precision(), self.scale);
+        }
         match self.kind {
             String => DataType::Utf8,
             Decimal | Zoned | Lzoned | Tzoned | Uzoned | Packed | Upacked | Npacked => {
-                DataType::Decimal128(self.precision, self.scale as i8)
+                DataType::Decimal128(self.precision(), self.scale)
             }
             Boolean | Bits => DataType::Boolean,
             Date | Time | Timestamp => self.pattern.as_ref().unwrap().data_type(),
-            Binary => DataType::Binary,
+            Binary | Bstring => DataType::Binary,
             IntLe | IntBe => DataType::Int64,
             UintLe | UintBe => DataType::UInt64,
             FloatLe | FloatBe if self.length == Some(4) => DataType::Float32,
@@ -237,6 +263,10 @@ impl CompiledField {
         if self.null_bytes.as_deref() == Some(b) {
             return Ok(true);
         }
+        if self.kind == FieldType::Bstring {
+            let trimmed = self.trim.apply_bytes(b, &self.space_bytes);
+            return Ok(self.null_text_bytes.iter().any(|marker| marker == trimmed));
+        }
         if self.kind.text() && (self.spec.null_if.is_some() || self.null_regex.is_some()) {
             return Ok(self.text_null(self.trim_text(&self.encoding.decode_cow(b)?)));
         }
@@ -257,6 +287,10 @@ impl CompiledField {
     }
     fn padded_into(&self, s: &str, output: &mut Vec<u8>) -> Result<()> {
         output.clear();
+        if self.kind == FieldType::Bstring {
+            *output = self.padded_binary(&self.encoding.encode(s)?)?;
+            return Ok(());
+        }
         // UTF-8 is stateless: pad directly without repeatedly encoding candidate strings.
         if self.encoding.is_utf8() {
             let width = self.length.unwrap_or(s.len());
@@ -267,7 +301,7 @@ impl CompiledField {
             let mut buf = [0; 4];
             let pad = self.pad.encode_utf8(&mut buf).as_bytes();
             if !padding.is_multiple_of(pad.len()) {
-                return Err(Error::output("pad_char cannot fill exact byte width"));
+                return Err(Error::output("space_char cannot fill exact byte width"));
             }
             output.reserve(width);
             if self.kind != FieldType::Decimal {
@@ -296,24 +330,25 @@ impl CompiledField {
         if bytes.len() == width {
             return Ok(bytes);
         }
-        let mut low = 0;
-        let mut high = width + 1;
-        while low < high {
-            let mid = (low + high) / 2;
-            let pad = self.pad.to_string().repeat(mid);
-            let text = if self.kind == FieldType::Decimal {
-                format!("{pad}{s}")
-            } else {
-                format!("{s}{pad}")
-            };
-            let bytes = self.encoding.encode(&text)?;
-            match bytes.len().cmp(&width) {
-                std::cmp::Ordering::Equal => return Ok(bytes),
-                std::cmp::Ordering::Less => low = mid + 1,
-                std::cmp::Ordering::Greater => high = mid,
-            }
+        let pad = self.encoding.encode(&self.pad.to_string())?;
+        if crate::encoding::shifted_pattern(self.encoding, &pad) {
+            return Err(Error::output("space_char must not require shift sequences"));
         }
-        Err(Error::output("pad_char cannot fill exact byte width"))
+        let padding = width - bytes.len();
+        if pad.is_empty() || !padding.is_multiple_of(pad.len()) {
+            return Err(Error::output("space_char cannot fill exact byte width"));
+        }
+        let mut output = Vec::with_capacity(width);
+        if self.kind != FieldType::Decimal {
+            output.extend_from_slice(&bytes);
+        }
+        for _ in 0..padding / pad.len() {
+            output.extend_from_slice(&pad);
+        }
+        if self.kind == FieldType::Decimal {
+            output.extend_from_slice(&bytes);
+        }
+        Ok(output)
     }
     pub fn parse_text(&self, s: Option<&str>) -> Result<ScalarValue> {
         let Some(s) = s else {
@@ -327,8 +362,8 @@ impl CompiledField {
             String => ScalarValue::Utf8(Some(s.into())),
             Decimal => ScalarValue::Decimal128(
                 Some(parse_decimal(s, self.precision, self.scale)?),
-                self.precision,
-                self.scale as i8,
+                self.precision(),
+                self.scale,
             ),
             Boolean => ScalarValue::Boolean(Some(if self.true_values.iter().any(|v| v == s) {
                 true
@@ -372,8 +407,8 @@ impl CompiledField {
             FieldType::Decimal => values.decimal(
                 text.map(|s| parse_decimal(s, self.precision, self.scale))
                     .transpose()?,
-                self.precision,
-                self.scale as i8,
+                self.precision(),
+                self.scale,
             ),
             _ => values.scalar(self.parse_text(text)?),
         }
@@ -394,14 +429,25 @@ impl CompiledField {
             for _ in 0..count {
                 match self.kind {
                     String => values.text(None)?,
-                    Binary => values.binary(None)?,
+                    Binary | Bstring => values.binary(None)?,
                     Decimal | Zoned | Lzoned | Tzoned | Uzoned | Packed | Upacked | Npacked => {
-                        values.decimal(None, self.precision, self.scale as i8)?
+                        values.decimal(None, self.precision(), self.scale)?
+                    }
+                    _ if self.scaled_integer() => {
+                        values.decimal(None, self.precision(), self.scale)?
                     }
                     _ => values.scalar(self.null())?,
                 }
             }
             return Ok(());
+        }
+        if self.kind == Bstring {
+            let bytes = self.trim.apply_bytes(bytes, &self.space_bytes);
+            let null = self.null_text_bytes.iter().any(|marker| marker == bytes);
+            if null && self.spec.nullable != Some(true) {
+                return Err(Error::input("NULL in non-nullable field"));
+            }
+            return values.binary((!null).then_some(bytes));
         }
         if self.kind.text() {
             let decoded = self.encoding.decode_cow(bytes)?;
@@ -422,8 +468,8 @@ impl CompiledField {
         if self.kind.decimal() {
             return values.decimal(
                 Some(self.decode_digits(bytes)?),
-                self.precision,
-                self.scale as i8,
+                self.precision(),
+                self.scale,
             );
         }
         let mut reversed = [0; 16];
@@ -456,7 +502,17 @@ impl CompiledField {
             HfloatLe | HfloatBe => ScalarValue::Float64(Some(decode_hfp(b))),
             _ => unreachable!(),
         };
-        values.scalar(value)
+        if self.scaled_integer() {
+            let raw = match value {
+                ScalarValue::Int64(Some(v)) => i128::from(v),
+                ScalarValue::UInt64(Some(v)) => i128::from(v),
+                _ => unreachable!(),
+            };
+            check_precision(raw, self.precision).map_err(|e| Error::input(e.message))?;
+            values.decimal(Some(raw), self.precision(), self.scale)
+        } else {
+            values.scalar(value)
+        }
     }
     pub fn mask(&self, bit: usize) -> u8 {
         1 << if self.spec.bit_order.as_deref() == Some("lsb0") {
@@ -517,6 +573,7 @@ impl CompiledField {
         use FieldType::*;
         match self.kind {
             String | Boolean | Date | Time | Timestamp => self.padded(""),
+            Bstring => self.padded_binary(&[]),
             Decimal => self.padded(&decimal_text(0, self.scale)),
             Zoned | Lzoned | Tzoned | Uzoned | Packed | Upacked | Npacked => self.encode_digits(0),
             _ => Ok(vec![0; self.length.unwrap()]),
@@ -537,7 +594,11 @@ impl CompiledField {
         use FieldType::*;
         bytes.clear();
         if self.kind == Filler {
-            bytes.resize(self.length.unwrap(), self.spec.fill_byte.unwrap_or(32));
+            if format == Format::Lines && self.spec.fill_byte.is_none() {
+                *bytes = crate::encoding::pad_binary(&[], self.length, &self.space_bytes)?;
+            } else {
+                bytes.resize(self.length.unwrap(), self.spec.fill_byte.unwrap_or(32));
+            }
             return Ok(());
         }
         let nulls = values.iter().filter(|v| v.is_null()).count();
@@ -569,7 +630,7 @@ impl CompiledField {
             return Ok(());
         }
         if nulls > 0 {
-            if format == Format::Fixed {
+            if matches!(format, Format::Fixed | Format::Lines) {
                 *bytes = self.fixed_null()?;
             } else {
                 bytes.extend_from_slice(
@@ -581,7 +642,21 @@ impl CompiledField {
             return Ok(());
         }
         let value = &values[0];
-        if self.kind.text() {
+        if self.kind == Bstring {
+            let b = match value {
+                ScalarValue::Binary(Some(b))
+                | ScalarValue::BinaryView(Some(b))
+                | ScalarValue::LargeBinary(Some(b))
+                | ScalarValue::FixedSizeBinary(_, Some(b)) => b,
+                _ => return Err(Error::output("bstring requires a binary SQL value")),
+            };
+            let b = if self.spec.trim.is_some() {
+                self.trim.apply_bytes(b, &self.space_bytes)
+            } else {
+                b
+            };
+            *bytes = self.padded_binary(b)?;
+        } else if self.kind.text() {
             match value {
                 ScalarValue::Utf8(Some(s))
                 | ScalarValue::LargeUtf8(Some(s))
@@ -593,11 +668,19 @@ impl CompiledField {
         } else if matches!(
             self.kind,
             Zoned | Lzoned | Tzoned | Uzoned | Packed | Upacked | Npacked
-        ) {
+        ) || self.scaled_integer()
+        {
             let ScalarValue::Decimal128(Some(v), _, s) = value else {
                 return Err(Error::output("decimal storage requires SQL DECIMAL"));
             };
             return self.encode_decimal_into(*v, *s, bytes);
+        } else if self.kind.integer() {
+            let value = if matches!(self.kind, IntLe | IntBe) {
+                i128::from(signed(value)?)
+            } else {
+                i128::from(unsigned(value)?)
+            };
+            self.encode_integer_into(value, bytes)?;
         } else {
             *bytes = match self.kind {
                 Binary => match value {
@@ -607,22 +690,6 @@ impl CompiledField {
                     | ScalarValue::FixedSizeBinary(_, Some(b)) => b.clone(),
                     _ => return Err(Error::output("binary requires a binary SQL value")),
                 },
-                IntLe | IntBe => {
-                    let v = signed(value)?;
-                    let bits = self.length.unwrap() * 8;
-                    if bits < 64 && (v < -(1i64 << (bits - 1)) || v >= (1i64 << (bits - 1))) {
-                        return Err(Error::output("signed integer overflow"));
-                    }
-                    v.to_be_bytes()[8 - self.length.unwrap()..].to_vec()
-                }
-                UintLe | UintBe => {
-                    let v = unsigned(value)?;
-                    let bits = self.length.unwrap() * 8;
-                    if bits < 64 && v >= (1u64 << bits) {
-                        return Err(Error::output("unsigned integer overflow"));
-                    }
-                    v.to_be_bytes()[8 - self.length.unwrap()..].to_vec()
-                }
                 FloatLe | FloatBe | HfloatLe | HfloatBe => {
                     let v = match value {
                         ScalarValue::Float32(Some(v)) => f64::from(*v),
@@ -653,6 +720,11 @@ impl CompiledField {
         }
         Ok(())
     }
+    fn padded_binary(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        let bytes = crate::encoding::pad_binary(bytes, self.length, &self.space_bytes)?;
+        self.check_length(&bytes)?;
+        Ok(bytes)
+    }
     pub fn encode_string_into(&self, value: &str, bytes: &mut Vec<u8>) -> Result<()> {
         self.padded_into(self.trim_output_text(value), bytes)?;
         if self.is_null_bytes(bytes)? {
@@ -660,17 +732,41 @@ impl CompiledField {
         }
         Ok(())
     }
-    /// Non-NULL zoned/packed Decimal128 values can be taken straight from Arrow.
+    fn encode_integer_into(&self, value: i128, bytes: &mut Vec<u8>) -> Result<()> {
+        let length = self.length.unwrap();
+        let bits = length * 8;
+        let raw = if matches!(self.kind, FieldType::IntLe | FieldType::IntBe) {
+            if value < -(1i128 << (bits - 1)) || value >= 1i128 << (bits - 1) {
+                return Err(Error::output("signed integer overflow"));
+            }
+            (value as i64).to_be_bytes()
+        } else {
+            if value < 0 || value >= 1i128 << bits {
+                return Err(Error::output("unsigned integer overflow"));
+            }
+            (value as u64).to_be_bytes()
+        };
+        bytes.clear();
+        bytes.extend_from_slice(&raw[8 - length..]);
+        Ok(())
+    }
+    /// Non-NULL scaled integer and zoned/packed values can come straight from Arrow.
     pub(crate) fn encode_decimal_into(
         &self,
         value: i128,
         scale: i8,
         bytes: &mut Vec<u8>,
     ) -> Result<()> {
-        self.encode_digits_into(
-            rescale(value, i32::from(scale), i32::from(self.scale))?,
-            bytes,
-        )?;
+        let value = rescale(value, i32::from(scale), i32::from(self.scale))?;
+        if self.scaled_integer() {
+            check_precision(value, self.precision)?;
+            self.encode_integer_into(value, bytes)?;
+            if self.kind.little() {
+                bytes.reverse();
+            }
+        } else {
+            self.encode_digits_into(value, bytes)?;
+        }
         self.check_length(bytes)?;
         if self.is_null_bytes(bytes)? {
             return Err(Error::output("non-NULL value collides with NULL rule"));

@@ -47,11 +47,9 @@ pub(super) fn output_fields(d: &Dataset, schema: &Schema) -> Result<Vec<Field>> 
             if f.kind.is_none() {
                 f.kind = Some(inferred.into());
             }
-            if let DataType::Decimal128(p, s) = column.data_type()
-                && *s >= 0
-            {
+            if let DataType::Decimal128(p, s) = column.data_type() {
                 f.precision.get_or_insert(*p);
-                f.scale.get_or_insert(*s as u8);
+                f.scale.get_or_insert(*s);
             }
             if let DataType::Time64(u) | DataType::Timestamp(u, _) = column.data_type()
                 && f.unit.is_none()

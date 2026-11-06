@@ -21,6 +21,7 @@ pub(crate) fn layout(d: &Dataset) -> Result<RecordLayout> {
         || d.compression.is_some()
         || d.csv.is_some()
         || d.fixed.is_some()
+        || d.lines.is_some()
         || d.rdw.is_some()
         || d.parquet.is_some()
     {
@@ -82,6 +83,7 @@ pub(crate) fn layout(d: &Dataset) -> Result<RecordLayout> {
         max_record_length: 0,
         format: Format::Lua,
         encoding: TextEncoding::UTF_8,
+        lines: None,
         conditional: None,
         checks: Default::default(),
     })

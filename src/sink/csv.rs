@@ -13,8 +13,7 @@ pub(crate) struct CsvEncoder {
     pub(super) quote_always: Vec<bool>,
 }
 impl CsvEncoder {
-    // Limit buffering between records. A single large row has the same
-    // allocation requirements as the serial writer; it is never split mid-cell.
+    // Bound each record before appending cells, including CSV escaping and EOL.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode(
         &self,
@@ -27,6 +26,7 @@ impl CsvEncoder {
     ) -> Result<usize> {
         let mut text = String::new();
         for row in offset..batch.num_rows() {
+            let record_start = buffer.len();
             if row % 256 == 0
                 && let Some(cancelled) = cancelled
             {
@@ -65,13 +65,23 @@ impl CsvEncoder {
                             &text
                         }
                     };
-                    append_csv_cell(
-                        buffer,
-                        f.trim_output_text(value),
-                        self.quote_always[field_no],
-                        self.delimiter,
-                        self.quote,
-                    );
+                    let value = f.trim_output_text(value);
+                    let always = self.quote_always[field_no];
+                    let quoted = always
+                        || value.is_empty()
+                        || value.contains([self.delimiter, self.quote, '\r', '\n']);
+                    let cell_size = value.len()
+                        + if quoted {
+                            (2 + value.matches(self.quote).count()) * self.quote.len_utf8()
+                        } else {
+                            0
+                        };
+                    if buffer.len() - record_start + cell_size + self.line_ending.len()
+                        > framing::MAX_RECORD
+                    {
+                        return Err(Error::output("CSV record exceeds 16 MiB"));
+                    }
+                    append_csv_value(buffer, value, quoted, self.quote);
                     Ok(())
                 })();
                 result.map_err(|e| {
@@ -84,6 +94,13 @@ impl CsvEncoder {
                         f.length
                     ))
                 })?;
+            }
+            if buffer.len() - record_start + self.line_ending.len() > framing::MAX_RECORD {
+                return Err(Error::output("CSV record exceeds 16 MiB").context(format!(
+                    "output {} record {}",
+                    self.id,
+                    start_row + row as u64 + 1
+                )));
             }
             buffer.push_str(self.line_ending);
             if buffer.len() >= limit {

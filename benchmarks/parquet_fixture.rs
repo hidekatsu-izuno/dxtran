@@ -25,7 +25,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let dir = PathBuf::from(args.next().expect("directory"));
     let rows: usize = args.next().expect("rows").parse()?;
-    let fields = (0..8)
+    let columns: usize = args.next().map(|s| s.parse()).transpose()?.unwrap_or(16);
+    let text_columns = columns
+        .checked_sub(8)
+        .filter(|n| *n > 0)
+        .ok_or("at least nine columns required")?;
+    let fields = (0..text_columns)
         .map(|j| Field::new(format!("text_{j}"), DataType::Utf8, false))
         .chain(
             (0..8).map(|j| Field::new(format!("amount_{j}"), DataType::Decimal128(16, 2), false)),
@@ -54,10 +59,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut csv = BufWriter::new(File::create(dir.join("expected.csv"))?);
     for start in (0..rows).step_by(8192) {
         let end = (start + 8192).min(rows);
-        let strings: Vec<Vec<String>> = (0..8)
+        let strings: Vec<Vec<String>> = (0..text_columns)
             .map(|j| {
                 (start..end)
-                    .map(|n| format!("{:015x}", mix(n as u64 * 8 + j) & 0x0fff_ffff_ffff_ffff))
+                    .map(|n| {
+                        format!(
+                            "{:015x}",
+                            mix((n * text_columns + j) as u64) & 0x0fff_ffff_ffff_ffff
+                        )
+                    })
                     .collect()
             })
             .collect();
@@ -110,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (name, _, _) in cases {
         let path = dir.join(format!("{name}.parquet"));
         let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(&path)?)?;
-        metadata.insert(name.into(), serde_json::json!({"bytes":path.metadata()?.len(), "rows":rows,
+        metadata.insert(name.into(), serde_json::json!({"bytes":path.metadata()?.len(), "rows":rows, "columns":columns,
             "row_groups":reader.metadata().num_row_groups(), "max_group_rows":reader.metadata().row_groups().iter().map(|g|g.num_rows()).max()}));
     }
     println!("{}", serde_json::Value::Object(metadata));

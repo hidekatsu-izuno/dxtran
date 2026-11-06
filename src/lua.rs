@@ -1,7 +1,7 @@
 //! Common trusted LuaJIT environment for input and output plugins.
 mod state;
 use crate::config::{Dataset, Lua as Settings};
-use mlua::{ChunkMode, Function, Lua, LuaSerdeExt, Table, Value};
+use mlua::{Function, Lua, LuaSerdeExt, Table, Value, chunk::ChunkMode};
 pub(crate) use state::{JobState, Resource, Runtime};
 use std::{
     collections::BTreeMap,

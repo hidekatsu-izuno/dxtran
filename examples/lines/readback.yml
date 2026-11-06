@@ -1,0 +1,14 @@
+input:
+  - id: records
+    format: lines
+    path: out/records.txt
+    encoding: utf-8
+    lines: {line_ending: crlf}
+    fields: {import: fields.yml}
+output:
+  - id: readback
+    sql: SELECT * FROM records
+    format: csv
+    path: out/readback.csv
+    mode: overwrite
+    encoding: utf-8

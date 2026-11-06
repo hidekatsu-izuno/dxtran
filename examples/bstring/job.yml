@@ -1,0 +1,46 @@
+input:
+  - id: mainframe
+    format: fixed
+    path: data/records.dat
+    encoding: cp939
+    fixed: {record_separator: none}
+    fields: {import: ./fields.yml}
+  - id: lookup
+    format: csv
+    path: data/lookup.csv
+    encoding: utf-8
+    fields: [{name: code}, {name: label}]
+output:
+  - id: fixed_copy
+    format: fixed
+    path: out/records.dat
+    encoding: cp939
+    mode: overwrite
+    fixed: {record_separator: none}
+    fields: {import: ./fields.yml}
+    sql: SELECT * FROM mainframe
+  - id: rdw_copy
+    format: rdw
+    path: out/records.rdw
+    encoding: cp939
+    mode: overwrite
+    rdw: {}
+    fields: {import: ./fields.yml}
+    sql: SELECT * FROM mainframe
+  - id: sorted
+    format: csv
+    path: out/sorted.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: >-
+      SELECT icu_decode(m.code, 'cp939') AS code_text, m.payload
+      FROM mainframe m ORDER BY m.code
+  - id: joined
+    format: csv
+    path: out/joined.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: >-
+      SELECT l.code AS code_text, l.label, m.payload
+      FROM mainframe m JOIN lookup l ON m.code = icu_encode(l.code, 'cp939')
+      ORDER BY m.code

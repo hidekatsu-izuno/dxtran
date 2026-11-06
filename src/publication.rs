@@ -44,6 +44,13 @@ pub fn preflight(job: &Job, temp: &Path) -> Result<()> {
     let fs = filesystem(&temporary).map_err(|e| Error::config(e.to_string()))?;
     let mut paths = BTreeSet::new();
     let mut inodes = BTreeSet::new();
+    for path in job.hashes.keys() {
+        paths.insert(
+            fs::canonicalize(path)
+                .map_err(|e| Error::config(e.to_string()).context(path.display()))?,
+        );
+        inodes.insert(identity(path).map_err(|e| Error::config(e.to_string()))?);
+    }
     if let Some(path) = job.lua.as_ref().and_then(|lua| lua.path.as_ref()) {
         let canonical = fs::canonicalize(path)
             .map_err(|e| Error::config(e.to_string()).context(path.display()))?;

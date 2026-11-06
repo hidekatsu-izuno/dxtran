@@ -1,0 +1,29 @@
+input:
+  - id: plain
+    format: rdw
+    path: out/records.rdw
+    encoding: utf-8
+    fields: {import: fields.yml}
+  - id: blocked
+    format: rdw
+    path: out/records.vb
+    encoding: utf-8
+    rdw: {bdw: true, spanned: false}
+    fields: {import: fields.yml}
+  - id: spanned
+    format: rdw
+    path: out/records.vbs
+    encoding: utf-8
+    rdw: {bdw: true, spanned: true}
+    fields: {import: fields.yml}
+  - id: segments
+    format: rdw
+    path: out/records.sdw
+    encoding: utf-8
+    rdw: {bdw: false, spanned: true}
+    fields: {import: fields.yml}
+output:
+  - {id: plain_csv, sql: 'SELECT * FROM plain', format: csv, path: out/plain.csv, mode: overwrite, encoding: utf-8}
+  - {id: blocked_csv, sql: 'SELECT * FROM blocked', format: csv, path: out/blocked.csv, mode: overwrite, encoding: utf-8}
+  - {id: spanned_csv, sql: 'SELECT * FROM spanned', format: csv, path: out/spanned.csv, mode: overwrite, encoding: utf-8}
+  - {id: segments_csv, sql: 'SELECT * FROM segments', format: csv, path: out/segments.csv, mode: overwrite, encoding: utf-8}

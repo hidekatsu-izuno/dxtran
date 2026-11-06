@@ -137,7 +137,7 @@ pub(super) fn order_key(dataset: usize, record: u64) -> [u8; 32] {
 pub(super) fn field_extra_bound(field: &crate::field::CompiledField, width: usize) -> usize {
     match field.kind {
         FieldType::String => field.encoding.max_utf8_length(width),
-        FieldType::Binary => width,
+        FieldType::Binary | FieldType::Bstring => width,
         _ => 0,
     }
 }

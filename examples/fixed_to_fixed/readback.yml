@@ -5,7 +5,7 @@ input:
     encoding: utf-16le
     fixed: {record_separator: lf, record_length: 8}
     fields:
-      - {name: label, length: 8, pad_char: '　'}
+      - {name: label, length: 8, space_char: '　'}
 output:
   - id: readback
     sql: SELECT label FROM names

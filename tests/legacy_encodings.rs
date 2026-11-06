@@ -106,8 +106,8 @@ fn physical_legacy_fields_preserve_padding_shift_boundaries_and_binary_data() {
             let expected = record.repeat(rows);
             fs::write(dir.path().join("in.dat"), &expected).unwrap();
             let mut input = json!({"id":"data", "format":format, "path":"in.dat", "encoding":encoding,
-                "fields":[{"name":"left_text", "length":width, "pad_char":pad},
-                    {"name":"right_text", "length":width, "pad_char":pad},
+                "fields":[{"name":"left_text", "length":width, "space_char":pad},
+                    {"name":"right_text", "length":width, "space_char":pad},
                     {"name":"payload", "type":"binary", "length":2},
                     {"name":"amount", "type":"packed", "length":2, "precision":3}]});
             if format == "fixed" {
@@ -184,7 +184,7 @@ fn fujitsu_ebcdic_csv_transcodes_syntax_and_newlines() {
 fn legacy_conversion_failures_keep_previous_output() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = json!({"input":[{"id":"data", "format":"fixed", "path":"in.dat", "encoding":"jef",
-        "fixed":{"record_separator":"none"}, "fields":[{"name":"text", "length":2, "pad_char":"　"}]}],
+        "fixed":{"record_separator":"none"}, "fields":[{"name":"text", "length":2, "space_char":"　"}]}],
         "output":[{"id":"result", "format":"csv", "path":"out.csv", "encoding":"utf-8",
             "mode":"overwrite", "sql":"SELECT * FROM data"}]});
     fs::write(dir.path().join("in.dat"), [0, 0]).unwrap();

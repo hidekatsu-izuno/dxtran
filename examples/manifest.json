@@ -1,5 +1,76 @@
 [
   {
+    "directory": "exit_codes",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.csv": "expected/records.csv"
+        }
+      },
+      {
+        "file": "input_error.yml",
+        "exit_code": 12,
+        "scan_exit_code": 12,
+        "diagnostic": "入力金額が負のため終了コード12で終了します。",
+        "absent": [
+          "out/input_error.csv"
+        ]
+      },
+      {
+        "file": "output_error.yml",
+        "exit_code": 20,
+        "diagnostic": "出力金額が負のため終了コード20で終了します。",
+        "absent": [
+          "out/output_error.csv"
+        ]
+      }
+    ]
+  },
+  {
+    "directory": "rdw_framing",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.csv": "expected/records.csv",
+          "out/records.rdw": "expected/records.rdw",
+          "out/records.vb": "expected/records.vb",
+          "out/records.vbs": "expected/records.vbs",
+          "out/records.sdw": "expected/records.rdw"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/plain.csv": "expected/records.csv",
+          "out/blocked.csv": "expected/records.csv",
+          "out/spanned.csv": "expected/records.csv",
+          "out/segments.csv": "expected/records.csv"
+        }
+      }
+    ]
+  },
+  {
+    "directory": "lines",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.csv": "expected/records.csv",
+          "out/records.txt": "expected/records.txt",
+          "out/padded.txt": "expected/padded.txt"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/readback.csv": "expected/records.csv"
+        }
+      }
+    ]
+  },
+  {
     "directory": "csv_to_csv",
     "jobs": [
       {
@@ -248,6 +319,33 @@
         "absent": [
           "out/output_abend.csv"
         ]
+      }
+    ]
+  },
+  {
+    "directory": "bstring",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.dat": "expected/records.dat",
+          "out/records.rdw": "expected/records.rdw",
+          "out/sorted.csv": "expected/sorted.csv",
+          "out/joined.csv": "expected/joined.csv"
+        }
+      },
+      {
+        "file": "fullwidth.yml",
+        "outputs": {
+          "out/fullwidth.csv": "expected/fullwidth.csv"
+        }
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/fixed_readback.csv": "expected/readback.csv",
+          "out/rdw_readback.csv": "expected/readback.csv"
+        }
       }
     ]
   },

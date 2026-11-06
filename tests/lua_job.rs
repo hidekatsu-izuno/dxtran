@@ -389,13 +389,14 @@ fn imported_job_settings_resolve_paths_and_protect_the_lifecycle_script() {
     write_job(dir.path(), &value);
     let loaded = dxtran::config::load(&dir.path().join("job.json")).unwrap();
     let config = loaded.lua.as_ref().unwrap();
+    let definitions = fs::canonicalize(dir.path().join("defs")).unwrap();
     assert_eq!(
         config.path.as_ref().unwrap(),
-        &dir.path().join("defs/hooks.lua")
+        &definitions.join("hooks.lua")
     );
     assert_eq!(
         Path::new(&config.libraries["native"]),
-        dir.path().join("defs/./libnative.so")
+        definitions.join("libnative.so")
     );
     status(invoke(dir.path(), "run", false, 4), 0);
     assert_eq!(

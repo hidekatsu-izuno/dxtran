@@ -37,6 +37,7 @@ pub struct OutputSink {
     writer: Writer,
     pub rows: u64,
     physical: Option<Arc<PhysicalEncoder>>,
+    rdw: Option<framing::rdw::RdwWriter>,
     csv: Option<Arc<CsvEncoder>>,
     csv_buffer: String,
 }
@@ -48,7 +49,11 @@ pub fn csv_cell(value: Option<&str>, always: bool, delimiter: char, quote: char)
     out
 }
 fn append_csv_cell(out: &mut String, s: &str, always: bool, delimiter: char, quote: char) {
-    if always || s.is_empty() || s.contains([delimiter, quote, '\r', '\n']) {
+    let quoted = always || s.is_empty() || s.contains([delimiter, quote, '\r', '\n']);
+    append_csv_value(out, s, quoted, quote);
+}
+fn append_csv_value(out: &mut String, s: &str, quoted: bool, quote: char) {
+    if quoted {
         out.push(quote);
         let mut rest = s;
         for (position, _) in s.match_indices(quote) {
@@ -129,7 +134,7 @@ impl OutputSink {
                     .collect::<Result<Vec<_>>>()
             })
             .collect::<Result<_>>()?;
-        let physical = matches!(dataset.format, Format::Fixed | Format::Rdw)
+        let physical = matches!(dataset.format, Format::Fixed | Format::Lines | Format::Rdw)
             .then(|| Arc::new(PhysicalEncoder::new(dataset, layout, &indices)));
         let quote_always = layout
             .fields
@@ -153,6 +158,8 @@ impl OutputSink {
             writer,
             rows: 0,
             physical,
+            rdw: (dataset.format == Format::Rdw)
+                .then(|| framing::rdw::RdwWriter::new(dataset.rdw.clone().unwrap_or_default())),
             csv: encoder,
             csv_buffer: String::new(),
         };
@@ -173,6 +180,9 @@ impl OutputSink {
                 .collect::<Vec<_>>()
                 .join(&csv.delimiter)
                 + line_ending;
+            if header.len() > framing::MAX_RECORD {
+                return Err(Error::output("CSV header exceeds 16 MiB").context(&dataset.id));
+            }
             if let Writer::Csv(w) = &mut sink.writer {
                 w.text(&header)?;
             }
@@ -217,7 +227,7 @@ impl OutputSink {
             return Ok(());
         }
         if let (Some(encoder), Writer::Physical(writer)) = (&self.physical, &mut self.writer) {
-            return encoder.write_batch(&batch, writer, &mut self.rows, None);
+            return encoder.write_batch(&batch, writer, &mut self.rows, None, self.rdw.as_mut());
         }
         let encoder = self.csv.as_ref().expect("CSV encoder");
         let Writer::Csv(writer) = &mut self.writer else {
@@ -277,7 +287,11 @@ impl OutputSink {
         self.rows += rows as u64;
         Ok(())
     }
-    pub fn finish(self) -> Result<u64> {
+    pub fn finish(mut self) -> Result<u64> {
+        if let (Some(rdw), Writer::Physical(writer)) = (&mut self.rdw, &mut self.writer) {
+            rdw.finish(writer)
+                .map_err(|e| e.context(format!("output {}", self.dataset.id)))?;
+        }
         match self.writer {
             Writer::Lua(mut writer) => {
                 writer.finish().map_err(|e| Error::output(e.to_string()))?;

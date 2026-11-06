@@ -49,8 +49,10 @@ pub(super) fn compile(
     separator: Vec<u8>,
     max: usize,
 ) -> Result<RecordLayout> {
-    if !matches!(d.format, Format::Fixed | Format::Rdw) {
-        return Err(Error::config("field when is only supported for fixed/rdw"));
+    if !matches!(d.format, Format::Fixed | Format::Lines | Format::Rdw) {
+        return Err(Error::config(
+            "field when is only supported for fixed/lines/rdw",
+        ));
     }
     let bad = |message: &str| Error::config(message).context(&d.id);
     let output = result.is_some();
@@ -192,6 +194,7 @@ pub(super) fn compile(
             }
         }
     }
+    let lines = RecordLayout::line_framing(d, encoding, length, &fields)?;
     let layout = RecordLayout {
         fields,
         schema,
@@ -201,6 +204,7 @@ pub(super) fn compile(
         max_record_length: max,
         format: d.format,
         encoding,
+        lines,
         conditional: Some(ConditionalLayout {
             conditions,
             field_conditions,
@@ -277,7 +281,8 @@ impl ConditionalLayout {
             selected.fields.push(i);
         }
         if selected.fields.is_empty()
-            || layout.format == Format::Fixed && selected.length != layout.length
+            || matches!(layout.format, Format::Fixed | Format::Lines)
+                && selected.length != layout.length
         {
             return Err(self.error("selected record fields do not cover the record length (no matching record condition or missing FILLER)"));
         }

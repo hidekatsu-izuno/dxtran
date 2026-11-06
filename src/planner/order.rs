@@ -269,7 +269,26 @@ impl OrderPlanner {
     }
 
     fn rewrite_alias(&mut self, alias: &SubqueryAlias) -> Result<Ordered> {
-        let input = self.rewrite(&alias.input)?;
+        let input = if let Some(&except) = self.sets.get(alias.alias.table()) {
+            let LogicalPlan::Join(join) = alias.input.as_ref() else {
+                return Err(Error::sql("ALL set operation marker must wrap its join"));
+            };
+            let expected = if except {
+                JoinType::LeftAnti
+            } else {
+                JoinType::LeftSemi
+            };
+            if join.join_type != expected {
+                return Err(Error::sql(
+                    "ALL set operation marker has an unexpected join type",
+                ));
+            }
+            let left = self.rewrite(&join.left)?;
+            let right = self.rewrite(&join.right)?;
+            self.set_all(join, left, right, except)?
+        } else {
+            self.rewrite(&alias.input)?
+        };
         let name = if let Expr::Column(c) = input.key {
             c.name
         } else {
@@ -494,15 +513,6 @@ impl OrderPlanner {
     fn rewrite_join(&mut self, join: &Join) -> Result<Ordered> {
         let left = self.rewrite(&join.left)?;
         let right = self.rewrite(&join.right)?;
-        let set = join
-            .left
-            .schema()
-            .iter()
-            .find_map(|(q, _)| q.and_then(|q| self.sets.get(q.table())))
-            .copied();
-        if let Some(except) = set {
-            return self.set_all(join, left, right, except);
-        }
         let key = match join.join_type {
             JoinType::LeftSemi | JoinType::LeftAnti => left.key.clone(),
             JoinType::RightSemi | JoinType::RightAnti => right.key.clone(),

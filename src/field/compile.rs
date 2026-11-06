@@ -19,7 +19,7 @@ fn invalid(spec: &Field, message: &str) -> Error {
 }
 struct NumericLayout {
     precision: u8,
-    scale: u8,
+    scale: i8,
 }
 struct TextRules {
     pad: char,
@@ -57,6 +57,23 @@ impl CompiledField {
             None
         };
         let (true_values, false_values) = boolean_values(&spec, kind, pad, trim)?;
+        let space_bytes =
+            if kind == FieldType::Bstring || format == Format::Lines && kind == FieldType::Filler {
+                crate::encoding::encoded_space(encoding, spec.space_char.as_deref().unwrap_or(" "))
+                    .map_err(|e| invalid(&spec, &e.message))?
+            } else {
+                Vec::new()
+            };
+        let null_text_bytes = if kind == FieldType::Bstring {
+            spec.null_if
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|s| encoding.encode(s).map_err(|e| invalid(&spec, &e.message)))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         validate_bits(&spec, kind, length)?;
         let mut f = Self {
             spec,
@@ -67,6 +84,8 @@ impl CompiledField {
             scale: numeric.scale,
             encoding,
             pad,
+            space_bytes,
+            null_text_bytes,
             trim,
             null_bytes,
             null_regex,
@@ -99,7 +118,9 @@ impl CompiledField {
             }
             self.null_output = Some(bytes);
         }
-        if format == Format::Fixed && self.kind != FieldType::Bits && self.kind != FieldType::Filler
+        if matches!(format, Format::Fixed | Format::Lines)
+            && self.kind != FieldType::Bits
+            && self.kind != FieldType::Filler
         {
             self.fixed_null().map_err(|e| Error::config(e.message))?;
         }
@@ -145,7 +166,10 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
         Some(Length::Rest(s))
             if s == "rest"
                 && format == Format::Rdw
-                && matches!(kind, FieldType::String | FieldType::Binary) =>
+                && matches!(
+                    kind,
+                    FieldType::String | FieldType::Binary | FieldType::Bstring
+                ) =>
         {
             None
         }
@@ -154,6 +178,12 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
     };
     if length.is_some_and(|n| n > crate::framing::MAX_RECORD) {
         return Err(bad("field exceeds 16 MiB record limit"));
+    }
+    if format == Format::Lines
+        && !kind.text()
+        && !matches!(kind, FieldType::Bstring | FieldType::Filler)
+    {
+        return Err(bad("lines supports text storage types, bstring and FILLER"));
     }
     if kind == FieldType::Filler {
         let mut allowed = spec.clone();
@@ -176,7 +206,6 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
         if spec.when.is_some()
             || spec.length.is_some()
             || spec.offset.is_some()
-            || spec.pad_char.is_some()
             || spec.null_if.is_some()
             || spec.null_if_pattern.is_some()
             || spec.null_bytes.is_some()
@@ -220,8 +249,13 @@ fn validate_options(
     if spec.fill_byte.is_some() && kind != FieldType::Filler {
         return Err(bad("fill_byte requires FILLER"));
     }
-    if (spec.precision.is_some() || spec.scale.is_some()) && !kind.decimal() {
-        return Err(bad("precision/scale require a decimal type"));
+    if (spec.precision.is_some() || spec.scale.is_some())
+        && !kind.decimal()
+        && !(kind.integer() && spec.scale.is_some())
+    {
+        return Err(bad(
+            "precision/scale require a decimal type or an integer type with scale",
+        ));
     }
     if spec.zone.is_some()
         && !matches!(
@@ -239,13 +273,16 @@ fn validate_options(
         return Err(bad("invalid zone"));
     }
     if (spec.trim.is_some()
-        || spec.pad_char.is_some()
+        || spec.space_char.is_some()
         || spec.null_if.is_some()
-        || spec.null_if_pattern.is_some()
         || spec.null_output.is_some())
         && !kind.text()
+        && kind != FieldType::Bstring
     {
         return Err(bad("text options require a text storage type"));
+    }
+    if spec.null_if_pattern.is_some() && !kind.text() {
+        return Err(bad("null_if_pattern requires a decoded text storage type"));
     }
     if (spec.true_values.is_some()
         || spec.false_values.is_some()
@@ -311,6 +348,8 @@ fn numeric_layout(spec: &Field, kind: FieldType, length: Option<usize>) -> Resul
         return Err(bad("incompatible physical width"));
     }
     let capacity = match kind {
+        FieldType::IntLe | FieldType::IntBe => (1u128 << (len * 8 - 1)).ilog10() as usize + 1,
+        FieldType::UintLe | FieldType::UintBe => ((1u128 << (len * 8)) - 1).ilog10() as usize + 1,
         FieldType::Zoned | FieldType::Uzoned => len,
         FieldType::Lzoned | FieldType::Tzoned => len - 1,
         FieldType::Packed | FieldType::Upacked => 2 * len - 1,
@@ -318,14 +357,16 @@ fn numeric_layout(spec: &Field, kind: FieldType, length: Option<usize>) -> Resul
         _ => 38,
     };
     let precision = spec.precision.map(usize::from).unwrap_or(capacity);
-    if kind.decimal() && (!(1..=38).contains(&precision) || precision > capacity) {
+    if (kind.decimal() || kind.integer())
+        && (!(1..=38).contains(&precision) || precision > capacity)
+    {
         return Err(bad(
             "decimal precision must be 1..38 and fit physical capacity",
         ));
     }
     let scale = spec.scale.unwrap_or(0);
-    if kind.decimal() && scale as usize > precision {
-        return Err(bad("scale exceeds precision"));
+    if !(-38..=38).contains(&scale) {
+        return Err(bad("scale must be -38..38"));
     }
     Ok(NumericLayout {
         precision: precision as u8,
@@ -340,15 +381,16 @@ fn text_rules(
     format: Format,
 ) -> Result<TextRules> {
     let bad = |message: &str| invalid(spec, message);
-    let pad = spec.pad_char.as_deref().unwrap_or(" ");
+    let pad = spec.space_char.as_deref().unwrap_or(" ");
     if pad.chars().count() != 1 {
-        return Err(bad("pad_char must be one Unicode character"));
+        return Err(bad("space_char must be one Unicode character"));
     }
     let pad = pad.chars().next().unwrap();
     let trim = spec.trim.as_deref().unwrap_or_else(|| {
-        if !kind.text() || format == Format::Csv || length.is_none() {
+        if (!kind.text() && kind != FieldType::Bstring) || format == Format::Csv || length.is_none()
+        {
             "none"
-        } else if kind == FieldType::String {
+        } else if matches!(kind, FieldType::String | FieldType::Bstring) {
             "right"
         } else {
             "both"

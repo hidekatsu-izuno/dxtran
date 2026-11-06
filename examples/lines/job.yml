@@ -1,0 +1,29 @@
+input:
+  - id: records
+    format: lines
+    path: data/records.txt
+    encoding: utf-8
+    fields: {import: fields.yml}
+output:
+  - id: csv
+    sql: SELECT * FROM records
+    format: csv
+    path: out/records.csv
+    mode: overwrite
+    encoding: utf-8
+  - id: lines
+    sql: SELECT * FROM records
+    format: lines
+    path: out/records.txt
+    mode: overwrite
+    encoding: utf-8
+    lines: {line_ending: crlf}
+    fields: {import: fields.yml}
+  - id: padded
+    sql: SELECT * FROM records
+    format: lines
+    path: out/padded.txt
+    mode: overwrite
+    encoding: utf-8
+    lines: {trim_trailing_spaces: false, record_length: 10}
+    fields: {import: fields.yml}

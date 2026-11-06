@@ -504,6 +504,88 @@ fn rejects_path_collisions_and_invalid_configuration() {
 }
 
 #[test]
+fn protects_job_and_imports_from_output_overwrites_and_hard_links() {
+    let d = tempfile::tempdir().unwrap();
+    fs::write(d.path().join("in.csv"), "v\n1\n").unwrap();
+    let imported = "SELECT v FROM data\n";
+    fs::write(d.path().join("sql.yml"), imported).unwrap();
+    for target in ["job.yml", "sql.yml", "job-alias.yml", "sql-alias.yml"] {
+        let config = json!({"input":[csv("data", "in.csv", json!([{"name":"v"}]))],
+            "output":[{"id":"result","sql":{"import":"sql.yml"},"path":target,"format":"csv","encoding":"utf-8","mode":"overwrite"}]});
+        let original = config.to_string();
+        fs::write(d.path().join("job.yml"), &original).unwrap();
+        if target.contains("alias") {
+            let source = if target.starts_with("job") {
+                "job.yml"
+            } else {
+                "sql.yml"
+            };
+            fs::hard_link(d.path().join(source), d.path().join(target)).unwrap();
+        }
+        for command in ["check", "run"] {
+            let result = invoke(d.path(), command, &[]);
+            assert_eq!(
+                result.status.code(),
+                Some(2),
+                "{target}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stderr).contains("path collision"));
+            assert_eq!(
+                fs::read_to_string(d.path().join("job.yml")).unwrap(),
+                original
+            );
+            assert_eq!(
+                fs::read_to_string(d.path().join("sql.yml")).unwrap(),
+                imported
+            );
+        }
+    }
+}
+
+#[test]
+fn ambiguous_timestamp_output_preserves_all_existing_outputs() {
+    let d = tempfile::tempdir().unwrap();
+    fs::write(
+        d.path().join("in.csv"),
+        "stamp\n2026-11-01T05:30:00Z\n2026-11-01T06:30:00Z\n",
+    )
+    .unwrap();
+    let input = json!([csv(
+        "data",
+        "in.csv",
+        json!([{"name":"stamp","type":"timestamp","unit":"s","datetime_pattern":"yyyy-MM-dd'T'HH:mm:ssXXX"}])
+    )]);
+    for threads in ["1", "4"] {
+        fs::write(d.path().join("first.csv"), "first preserved").unwrap();
+        fs::write(d.path().join("out.csv"), "preserved").unwrap();
+        let mut output = out("SELECT * FROM data", "out.csv");
+        output["mode"] = json!("overwrite");
+        output["fields"] = json!([{"name":"stamp","timezone":"America/New_York","datetime_pattern":"yyyy-MM-dd HH:mm:ss"}]);
+        let mut first = out("SELECT * FROM data", "first.csv");
+        first["id"] = json!("first");
+        first["mode"] = json!("overwrite");
+        write_job(d.path(), input.clone(), json!([]), json!([first, output]));
+        let result = invoke(d.path(), "run", &["--threads", threads]);
+        assert_eq!(
+            result.status.code(),
+            Some(5),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stderr).contains("XXX"));
+        assert_eq!(
+            fs::read_to_string(d.path().join("first.csv")).unwrap(),
+            "first preserved"
+        );
+        assert_eq!(
+            fs::read_to_string(d.path().join("out.csv")).unwrap(),
+            "preserved"
+        );
+    }
+}
+
+#[test]
 fn input_larger_than_pool_and_external_sort() {
     use std::io::{BufRead, BufReader, BufWriter, Write};
     let d = tempfile::tempdir().unwrap();
