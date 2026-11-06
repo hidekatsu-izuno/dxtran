@@ -1,20 +1,18 @@
 //! Encoding-aware string operations with byte-based lengths and Binary results.
+use super::arguments::{Arguments, Cache};
 use crate::{
     encoding::{TextEncoding, encoded_space, pad_encoded, trim_encoded},
     framing::MAX_RECORD,
 };
 use datafusion::{
-    arrow::{
-        array::{ArrayRef, new_empty_array},
-        datatypes::DataType,
-    },
+    arrow::{array::new_empty_array, datatypes::DataType},
     common::{Result, ScalarValue, exec_datafusion_err, plan_datafusion_err},
     logical_expr::{
         ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
     },
     prelude::SessionContext,
 };
-use std::collections::{HashMap, hash_map::Entry};
+use std::borrow::Cow;
 
 pub(super) fn register(context: &SessionContext) {
     use Kind::*;
@@ -175,43 +173,30 @@ impl ScalarUDFImpl for EncodedFunction {
                 .map(ColumnarValue::data_type)
                 .collect::<Vec<_>>(),
         )?;
-        let scalar = args
-            .args
-            .iter()
-            .all(|a| matches!(a, ColumnarValue::Scalar(_)));
-        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
-        let rows = arrays[0].len();
-        let mut encodings = HashMap::new();
+        let arguments = Arguments::new(&args.args)?;
+        let rows = arguments.rows();
+        let mut encodings = Cache::default();
         let mut values = Vec::with_capacity(rows);
         let null = ScalarValue::try_from(&result_type)?;
         for row in 0..rows {
-            if arrays
-                .iter()
-                .any(|a| a.data_type() == &DataType::Null || a.is_null(row))
-            {
+            if arguments.is_null(row) {
                 values.push(null.clone());
                 continue;
             }
-            let name = super::string(&arrays[1], row)?;
-            if encodings.len() == 128 && !encodings.contains_key(&name) {
-                encodings.clear();
-            }
-            let encoding = match encodings.entry(name) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => {
-                    let charset = TextEncoding::resolve(entry.key())
-                        .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?;
-                    let space = if self.kind.uses_default_space(arrays.len()) {
-                        encoded_space(charset, " ")
-                            .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?
-                    } else {
-                        Vec::new()
-                    };
-                    entry.insert(Encoding { charset, space })
-                }
-            };
+            let name = arguments.text(1, row)?;
+            let encoding = encodings.get(name, |name| {
+                let charset = TextEncoding::resolve(name)
+                    .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?;
+                let space = if self.kind.uses_default_space(arguments.len()) {
+                    encoded_space(charset, " ")
+                        .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?
+                } else {
+                    Vec::new()
+                };
+                Ok(Encoding { charset, space })
+            })?;
             let row = Row {
-                arrays: &arrays,
+                arguments: &arguments,
                 index: row,
                 encoding,
             };
@@ -225,63 +210,34 @@ impl ScalarUDFImpl for EncodedFunction {
         } else {
             ScalarValue::iter_to_array(values)?
         };
-        if scalar {
-            Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
-                &array, 0,
-            )?))
-        } else {
-            Ok(ColumnarValue::Array(array))
-        }
+        arguments.finish(array)
     }
 }
 
-struct Row<'a> {
-    arrays: &'a [ArrayRef],
+struct Row<'a, 'b> {
+    arguments: &'b Arguments<'a>,
     index: usize,
-    encoding: &'a Encoding,
+    encoding: &'b Encoding,
 }
 
-impl Row<'_> {
-    fn bytes(&self, index: usize) -> Result<Vec<u8>> {
-        let bytes = match ScalarValue::try_from_array(&self.arrays[index], self.index)? {
-            ScalarValue::Binary(Some(b))
-            | ScalarValue::BinaryView(Some(b))
-            | ScalarValue::LargeBinary(Some(b))
-            | ScalarValue::FixedSizeBinary(_, Some(b)) => b,
-            ScalarValue::Utf8(Some(s))
-            | ScalarValue::Utf8View(Some(s))
-            | ScalarValue::LargeUtf8(Some(s)) => self
-                .encoding
-                .charset
-                .encode(&s)
-                .map_err(|e| exec_datafusion_err!("{e}"))?,
-            _ => return Err(exec_datafusion_err!("expected binary or text")),
-        };
+impl Row<'_, '_> {
+    fn bytes(&self, index: usize) -> Result<Cow<'_, [u8]>> {
+        let bytes = self
+            .arguments
+            .bytes(index, self.index, self.encoding.charset)?;
         check_size(bytes.len())?;
         Ok(bytes)
     }
 
     fn integer(&self, index: usize) -> Result<i128> {
-        Ok(
-            match ScalarValue::try_from_array(&self.arrays[index], self.index)? {
-                ScalarValue::Int8(Some(n)) => i128::from(n),
-                ScalarValue::Int16(Some(n)) => i128::from(n),
-                ScalarValue::Int32(Some(n)) => i128::from(n),
-                ScalarValue::Int64(Some(n)) => i128::from(n),
-                ScalarValue::UInt8(Some(n)) => i128::from(n),
-                ScalarValue::UInt16(Some(n)) => i128::from(n),
-                ScalarValue::UInt32(Some(n)) => i128::from(n),
-                ScalarValue::UInt64(Some(n)) => i128::from(n),
-                _ => return Err(exec_datafusion_err!("expected integer")),
-            },
-        )
+        self.arguments.integer(index, self.index)
     }
 
-    fn pattern(&self, index: usize) -> Result<Vec<u8>> {
-        let bytes = if self.arrays.len() > index {
+    fn pattern(&self, index: usize) -> Result<Cow<'_, [u8]>> {
+        let bytes = if self.arguments.len() > index {
             self.bytes(index)?
         } else {
-            self.encoding.space.clone()
+            Cow::Borrowed(self.encoding.space.as_slice())
         };
         if bytes.is_empty() {
             return Err(exec_datafusion_err!(
@@ -301,7 +257,7 @@ impl Row<'_> {
                 // PostgreSQL/DataFusion substr rules, applied to bytes. A
                 // position before 1 reduces the requested count accordingly.
                 let start = self.integer(2)? - 1;
-                let end = if self.arrays.len() == 4 {
+                let end = if self.arguments.len() == 4 {
                     let count = self.integer(3)?;
                     if count < 0 {
                         return Err(exec_datafusion_err!(

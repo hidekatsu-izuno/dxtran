@@ -26,20 +26,24 @@ use std::{
 };
 
 enum Writer {
-    Csv(TextWriter<crate::compression::Output>),
-    Physical(crate::compression::Output),
+    Csv {
+        writer: TextWriter<crate::compression::Output>,
+        encoder: Arc<CsvEncoder>,
+        buffer: String,
+    },
+    Physical {
+        writer: crate::compression::Output,
+        encoder: Arc<PhysicalEncoder>,
+        rdw: Option<framing::rdw::RdwWriter>,
+    },
     Parquet(Box<parquet::arrow::ArrowWriter<BufWriter<File>>>),
     Lua(Box<datafusion::arrow::ipc::writer::FileWriter<BufWriter<File>>>),
 }
 pub struct OutputSink {
     dataset: Dataset,
-    layout: RecordLayout,
+    checks: crate::check::Checks,
     writer: Writer,
     pub rows: u64,
-    physical: Option<Arc<PhysicalEncoder>>,
-    rdw: Option<framing::rdw::RdwWriter>,
-    csv: Option<Arc<CsvEncoder>>,
-    csv_buffer: String,
 }
 pub fn csv_cell(value: Option<&str>, always: bool, delimiter: char, quote: char) -> String {
     let mut out = String::new();
@@ -91,35 +95,6 @@ impl OutputSink {
         } else {
             "\n"
         };
-        let writer = if dataset.format == Format::Csv {
-            Writer::Csv(TextWriter::new(
-                crate::compression::Output::new(file, dataset.compression)
-                    .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
-                layout.encoding,
-            ))
-        } else if dataset.format == Format::Lua {
-            Writer::Lua(Box::new(
-                datafusion::arrow::ipc::writer::FileWriter::try_new(
-                    BufWriter::new(file),
-                    result_schema,
-                )
-                .map_err(|e| Error::output(e.to_string()))?,
-            ))
-        } else if dataset.format == Format::Parquet {
-            Writer::Parquet(Box::new(
-                parquet::arrow::ArrowWriter::try_new(
-                    BufWriter::new(file),
-                    Arc::new(result_schema.clone()),
-                    Some(crate::parquet_io::properties(dataset)?),
-                )
-                .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
-            ))
-        } else {
-            Writer::Physical(
-                crate::compression::Output::new(file, dataset.compression)
-                    .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
-            )
-        };
         let indices: Vec<Vec<usize>> = layout
             .fields
             .iter()
@@ -134,38 +109,62 @@ impl OutputSink {
                     .collect::<Result<Vec<_>>>()
             })
             .collect::<Result<_>>()?;
-        let physical = matches!(dataset.format, Format::Fixed | Format::Lines | Format::Rdw)
-            .then(|| Arc::new(PhysicalEncoder::new(dataset, layout, &indices)));
-        let quote_always = layout
-            .fields
-            .iter()
-            .map(|f| f.spec.quote_style.as_deref().or(csv.quote_style.as_deref()) == Some("always"))
-            .collect();
-        let encoder = (dataset.format == Format::Csv).then(|| {
-            Arc::new(CsvEncoder {
-                id: dataset.id.clone(),
-                layout: layout.clone(),
-                indices,
-                delimiter,
-                quote,
-                line_ending,
-                quote_always,
-            })
-        });
+        let writer = match dataset.format {
+            Format::Csv => Writer::Csv {
+                writer: TextWriter::new(
+                    crate::compression::Output::new(file, dataset.compression)
+                        .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
+                    layout.encoding,
+                ),
+                encoder: Arc::new(CsvEncoder {
+                    id: dataset.id.clone(),
+                    layout: layout.clone(),
+                    indices,
+                    delimiter,
+                    quote,
+                    line_ending,
+                    quote_always: layout
+                        .fields
+                        .iter()
+                        .map(|f| {
+                            f.spec.quote_style.as_deref().or(csv.quote_style.as_deref())
+                                == Some("always")
+                        })
+                        .collect(),
+                }),
+                buffer: String::new(),
+            },
+            Format::Fixed | Format::Lines | Format::Rdw => Writer::Physical {
+                writer: crate::compression::Output::new(file, dataset.compression)
+                    .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
+                encoder: Arc::new(PhysicalEncoder::new(dataset, layout, &indices)),
+                rdw: (dataset.format == Format::Rdw)
+                    .then(|| framing::rdw::RdwWriter::new(dataset.rdw.clone().unwrap_or_default())),
+            },
+            Format::Lua => Writer::Lua(Box::new(
+                datafusion::arrow::ipc::writer::FileWriter::try_new(
+                    BufWriter::new(file),
+                    result_schema,
+                )
+                .map_err(|e| Error::output(e.to_string()))?,
+            )),
+            Format::Parquet => Writer::Parquet(Box::new(
+                parquet::arrow::ArrowWriter::try_new(
+                    BufWriter::new(file),
+                    Arc::new(result_schema.clone()),
+                    Some(crate::parquet_io::properties(dataset)?),
+                )
+                .map_err(|e| Error::output(e.to_string()).context(&dataset.id))?,
+            )),
+        };
         let mut sink = Self {
             dataset: dataset.clone(),
-            layout: layout.clone(),
+            checks: layout.checks.clone(),
             writer,
             rows: 0,
-            physical,
-            rdw: (dataset.format == Format::Rdw)
-                .then(|| framing::rdw::RdwWriter::new(dataset.rdw.clone().unwrap_or_default())),
-            csv: encoder,
-            csv_buffer: String::new(),
         };
         if dataset.format == Format::Csv && csv.header {
-            let header = sink
-                .layout
+            let header = layout
                 .fields
                 .iter()
                 .map(|f| {
@@ -183,85 +182,94 @@ impl OutputSink {
             if header.len() > framing::MAX_RECORD {
                 return Err(Error::output("CSV header exceeds 16 MiB").context(&dataset.id));
             }
-            if let Writer::Csv(w) = &mut sink.writer {
-                w.text(&header)?;
+            if let Writer::Csv { writer, .. } = &mut sink.writer {
+                writer.text(&header)?;
             }
         }
         Ok(sink)
     }
     pub fn batch(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.layout.checks.is_empty() {
+        if self.checks.is_empty()
+            || matches!(self.writer, Writer::Csv { .. } | Writer::Physical { .. })
+        {
             return self.write_batch(batch);
         }
         // A check and the value conversion for one record finish before the
         // next record's messages can be emitted.
+        let checked = self.checks.project(&batch)?;
         for row in 0..batch.num_rows() {
             let record = batch.slice(row, 1);
-            self.layout.checks.batch(&record, self.rows)?;
+            self.checks.check_row(&checked, row, self.rows + 1)?;
             self.write_batch(record)?;
         }
         Ok(())
     }
     fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        if let Writer::Lua(writer) = &mut self.writer {
-            writer
-                .write(&batch)
-                .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
-            self.rows += batch.num_rows() as u64;
-            return Ok(());
-        }
-        if let Writer::Parquet(writer) = &mut self.writer {
-            writer.write(&batch).map_err(|e| {
-                Error::output(e.to_string()).context(format!(
-                    "output {} record {}",
-                    self.dataset.id,
-                    self.rows + 1
-                ))
-            })?;
-            if writer.memory_size() >= framing::MAX_RECORD {
+        match &mut self.writer {
+            Writer::Lua(writer) => {
                 writer
-                    .flush()
+                    .write(&batch)
                     .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
             }
-            self.rows += batch.num_rows() as u64;
-            return Ok(());
+            Writer::Parquet(writer) => {
+                writer.write(&batch).map_err(|e| {
+                    Error::output(e.to_string()).context(format!(
+                        "output {} record {}",
+                        self.dataset.id,
+                        self.rows + 1
+                    ))
+                })?;
+                if writer.memory_size() >= framing::MAX_RECORD {
+                    writer
+                        .flush()
+                        .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
+                }
+            }
+            Writer::Physical {
+                writer,
+                encoder,
+                rdw,
+            } => {
+                return encoder.write_batch(&batch, writer, &mut self.rows, None, rdw.as_mut());
+            }
+            Writer::Csv {
+                writer,
+                encoder,
+                buffer,
+            } => {
+                let start_row = self.rows;
+                let mut offset = 0;
+                while offset < batch.num_rows() {
+                    let next =
+                        encoder.encode(&batch, offset, start_row, buffer, 64 * 1024, None)?;
+                    writer.text(buffer)?;
+                    buffer.clear();
+                    self.rows += (next - offset) as u64;
+                    offset = next;
+                }
+                return Ok(());
+            }
         }
-        if let (Some(encoder), Writer::Physical(writer)) = (&self.physical, &mut self.writer) {
-            return encoder.write_batch(&batch, writer, &mut self.rows, None, self.rdw.as_mut());
-        }
-        let encoder = self.csv.as_ref().expect("CSV encoder");
-        let Writer::Csv(writer) = &mut self.writer else {
-            unreachable!()
-        };
-        let start_row = self.rows;
-        let mut offset = 0;
-        while offset < batch.num_rows() {
-            let next = encoder.encode(
-                &batch,
-                offset,
-                start_row,
-                &mut self.csv_buffer,
-                64 * 1024,
-                None,
-            )?;
-            writer.text(&self.csv_buffer)?;
-            self.csv_buffer.clear();
-            self.rows += (next - offset) as u64;
-            offset = next;
-        }
+        self.rows += batch.num_rows() as u64;
         Ok(())
     }
     pub(crate) fn csv_encoder(&self) -> Option<Arc<CsvEncoder>> {
-        self.csv
-            .as_ref()
-            .filter(|_| self.layout.checks.is_empty() && crate::parallel::worthwhile(&self.layout))
-            .cloned()
+        match &self.writer {
+            Writer::Csv { encoder, .. }
+                if self.checks.is_empty() && crate::parallel::worthwhile(&encoder.layout) =>
+            {
+                Some(encoder.clone())
+            }
+            _ => None,
+        }
     }
     pub(crate) fn csv_writer_uses_cpu(&self) -> bool {
-        self.is_compressed() || !self.layout.encoding.is_utf8()
+        self.is_compressed()
+            || matches!(&self.writer,
+            Writer::Csv { encoder, .. } if !encoder.layout.encoding.is_utf8())
     }
     pub(crate) fn write_csv_text(&mut self, text: &str, rows: usize) -> Result<()> {
-        let Writer::Csv(writer) = &mut self.writer else {
+        let Writer::Csv { writer, .. } = &mut self.writer else {
             unreachable!()
         };
         writer.text(text)?;
@@ -269,16 +277,22 @@ impl OutputSink {
         Ok(())
     }
     pub(crate) fn fixed_encoder(&self) -> Option<Arc<PhysicalEncoder>> {
-        (self.dataset.format == Format::Fixed
-            && self.layout.checks.is_empty()
-            && crate::parallel::worthwhile(&self.layout))
-        .then(|| self.physical.as_ref().unwrap().clone())
+        match &self.writer {
+            Writer::Physical { encoder, .. }
+                if self.dataset.format == Format::Fixed
+                    && self.checks.is_empty()
+                    && encoder.worthwhile() =>
+            {
+                Some(encoder.clone())
+            }
+            _ => None,
+        }
     }
     pub(crate) fn is_compressed(&self) -> bool {
         self.dataset.compression.is_some()
     }
     pub(crate) fn write_fixed_bytes(&mut self, bytes: &[u8], rows: usize) -> Result<()> {
-        let Writer::Physical(writer) = &mut self.writer else {
+        let Writer::Physical { writer, .. } = &mut self.writer else {
             unreachable!()
         };
         writer
@@ -288,7 +302,12 @@ impl OutputSink {
         Ok(())
     }
     pub fn finish(mut self) -> Result<u64> {
-        if let (Some(rdw), Writer::Physical(writer)) = (&mut self.rdw, &mut self.writer) {
+        if let Writer::Physical {
+            writer,
+            rdw: Some(rdw),
+            ..
+        } = &mut self.writer
+        {
             rdw.finish(writer)
                 .map_err(|e| e.context(format!("output {}", self.dataset.id)))?;
         }
@@ -311,11 +330,11 @@ impl OutputSink {
                     .and_then(|_| writer.inner().get_ref().sync_all())
                     .map_err(|e| Error::output(e.to_string()).context(&self.dataset.id))?;
             }
-            Writer::Csv(mut w) => {
+            Writer::Csv { writer: mut w, .. } => {
                 w.finish()?;
                 w.inner.finish().map_err(|e| Error::output(e.to_string()))?;
             }
-            Writer::Physical(w) => {
+            Writer::Physical { writer: w, .. } => {
                 w.finish().map_err(|e| Error::output(e.to_string()))?;
             }
         }

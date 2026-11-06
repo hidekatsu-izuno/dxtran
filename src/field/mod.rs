@@ -642,20 +642,21 @@ impl CompiledField {
             return Ok(());
         }
         let value = &values[0];
-        if self.kind == Bstring {
+        if matches!(self.kind, Binary | Bstring) {
             let b = match value {
                 ScalarValue::Binary(Some(b))
                 | ScalarValue::BinaryView(Some(b))
                 | ScalarValue::LargeBinary(Some(b))
                 | ScalarValue::FixedSizeBinary(_, Some(b)) => b,
-                _ => return Err(Error::output("bstring requires a binary SQL value")),
+                _ => {
+                    return Err(Error::output(if self.kind == Bstring {
+                        "bstring requires a binary SQL value"
+                    } else {
+                        "binary requires a binary SQL value"
+                    }));
+                }
             };
-            let b = if self.spec.trim.is_some() {
-                self.trim.apply_bytes(b, &self.space_bytes)
-            } else {
-                b
-            };
-            *bytes = self.padded_binary(b)?;
+            return self.encode_binary_into(b, bytes);
         } else if self.kind.text() {
             match value {
                 ScalarValue::Utf8(Some(s))
@@ -683,13 +684,6 @@ impl CompiledField {
             self.encode_integer_into(value, bytes)?;
         } else {
             *bytes = match self.kind {
-                Binary => match value {
-                    ScalarValue::Binary(Some(b))
-                    | ScalarValue::BinaryView(Some(b))
-                    | ScalarValue::LargeBinary(Some(b))
-                    | ScalarValue::FixedSizeBinary(_, Some(b)) => b.clone(),
-                    _ => return Err(Error::output("binary requires a binary SQL value")),
-                },
                 FloatLe | FloatBe | HfloatLe | HfloatBe => {
                     let v = match value {
                         ScalarValue::Float32(Some(v)) => f64::from(*v),
@@ -727,6 +721,24 @@ impl CompiledField {
     }
     pub fn encode_string_into(&self, value: &str, bytes: &mut Vec<u8>) -> Result<()> {
         self.padded_into(self.trim_output_text(value), bytes)?;
+        if self.is_null_bytes(bytes)? {
+            return Err(Error::output("non-NULL value collides with NULL rule"));
+        }
+        Ok(())
+    }
+    pub(crate) fn encode_binary_into(&self, value: &[u8], bytes: &mut Vec<u8>) -> Result<()> {
+        if self.kind == FieldType::Bstring {
+            let value = if self.spec.trim.is_some() {
+                self.trim.apply_bytes(value, &self.space_bytes)
+            } else {
+                value
+            };
+            crate::encoding::pad_binary_into(value, self.length, &self.space_bytes, bytes)?;
+        } else {
+            bytes.clear();
+            bytes.extend_from_slice(value);
+        }
+        self.check_length(bytes)?;
         if self.is_null_bytes(bytes)? {
             return Err(Error::output("non-NULL value collides with NULL rule"));
         }

@@ -8,15 +8,21 @@ use crate::{
 };
 use datafusion::{
     arrow::{
-        array::{Array, ArrayRef, AsArray},
         datatypes::{Field as ArrowField, Schema, SchemaRef},
         record_batch::{RecordBatch, RecordBatchOptions},
     },
     common::{DFSchema, ScalarValue},
-    physical_expr::PhysicalExpr,
+    logical_expr::ColumnarValue,
+    physical_expr::{
+        PhysicalExpr,
+        utils::{collect_columns, reassign_expr_columns},
+    },
     prelude::SessionContext,
 };
-use std::sync::Arc;
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 #[derive(Clone, Debug)]
 struct Condition {
@@ -34,12 +40,29 @@ pub(crate) struct ConditionalLayout {
     common: Vec<usize>,
     schema: SchemaRef,
     output: bool,
+    projection: Vec<usize>,
+    input_columns: Vec<usize>,
+    nulls: Vec<ScalarValue>,
 }
 
 pub(crate) struct SelectedFields {
     pub fields: Vec<usize>,
     pub length: usize,
     rest: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct SelectionCache {
+    key: Vec<bool>,
+    columns: Vec<bool>,
+    selections: HashMap<Vec<bool>, Arc<SelectedFields>>,
+}
+
+#[derive(Default)]
+pub(crate) struct DecodeScratch {
+    row: Vec<ScalarValue>,
+    decoded: Vec<ScalarValue>,
+    selection: SelectionCache,
 }
 
 pub(super) fn compile(
@@ -174,6 +197,40 @@ pub(super) fn compile(
             None
         });
     }
+    let projection: Vec<_> = conditions
+        .iter()
+        .flat_map(|c| {
+            collect_columns(&c.expression)
+                .into_iter()
+                .map(|c| c.index())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let common_columns: Vec<_> = common
+        .iter()
+        .flat_map(|&i| indices[i].iter().copied())
+        .collect();
+    let input_columns = if output {
+        Vec::new()
+    } else {
+        projection.iter().map(|&i| common_columns[i]).collect()
+    };
+    let condition_schema = Arc::new(
+        condition_schema
+            .project(&projection)
+            .map_err(|e| bad(&e.to_string()))?,
+    );
+    for condition in &mut conditions {
+        condition.expression =
+            reassign_expr_columns(condition.expression.clone(), &condition_schema)
+                .map_err(|e| bad(&e.to_string()))?;
+    }
+    let nulls = schema
+        .fields()
+        .iter()
+        .map(|f| ScalarValue::try_from(f.data_type()).map_err(Error::from))
+        .collect::<Result<_>>()?;
     let mut ranges: Vec<_> = (0..fields.len()).collect();
     ranges.sort_by_key(|&i| (fields[i].offset, fields[i].length));
     // Reject conflicts that are certain without evaluating SQL. Predicates
@@ -213,6 +270,9 @@ pub(super) fn compile(
             common,
             schema: condition_schema,
             output,
+            projection,
+            input_columns,
+            nulls,
         }),
         checks: Default::default(),
     };
@@ -230,46 +290,56 @@ impl ConditionalLayout {
             Error::input(message)
         }
     }
-    pub(crate) fn evaluate(&self, batch: &RecordBatch) -> Result<Vec<ArrayRef>> {
+    pub(crate) fn evaluate(&self, batch: &RecordBatch) -> Result<Vec<ColumnarValue>> {
+        let batch = batch
+            .project(&self.projection)
+            .map_err(|e| self.error(e.to_string()))?;
+        self.evaluate_projected(&batch)
+    }
+    fn evaluate_projected(&self, batch: &RecordBatch) -> Result<Vec<ColumnarValue>> {
         self.conditions
             .iter()
             .map(|condition| {
-                condition
-                    .expression
-                    .evaluate(batch)
-                    .and_then(|v| v.into_array(batch.num_rows()))
-                    .map_err(|e| {
-                        self.error(e.to_string())
-                            .context(format!("{} when: {}", condition.origin, condition.sql))
-                    })
+                condition.expression.evaluate(batch).map_err(|e| {
+                    self.error(e.to_string())
+                        .context(format!("{} when: {}", condition.origin, condition.sql))
+                })
             })
             .collect()
     }
     pub(crate) fn select(
         &self,
         layout: &RecordLayout,
-        predicates: &[ArrayRef],
+        predicates: &[ColumnarValue],
         row: usize,
-    ) -> Result<SelectedFields> {
+        cache: &mut SelectionCache,
+    ) -> Result<Arc<SelectedFields>> {
+        cache.key.clear();
+        cache
+            .key
+            .extend(predicates.iter().map(|p| crate::predicate::is_true(p, row)));
+        if let Some(selected) = cache.selections.get(cache.key.as_slice()) {
+            return Ok(selected.clone());
+        }
         let mut selected = SelectedFields {
             fields: Vec::new(),
             length: 0,
             rest: false,
         };
-        let mut columns = vec![false; layout.schema.fields().len()];
+        cache.columns.clear();
+        cache.columns.resize(layout.schema.fields().len(), false);
         for &i in &self.ranges {
-            if let Some(condition) = self.field_conditions[i] {
-                let values = predicates[condition].as_boolean();
-                if values.is_null(row) || !values.value(row) {
-                    continue;
-                }
+            if let Some(condition) = self.field_conditions[i]
+                && !cache.key[condition]
+            {
+                continue;
             }
             let field = &layout.fields[i];
             if selected.rest || field.offset != selected.length {
                 return Err(self.error("selected record fields must cover the body without overlaps or gaps; length rest must be last"));
             }
             for &column in &self.columns[i] {
-                if std::mem::replace(&mut columns[column], true) {
+                if std::mem::replace(&mut cache.columns[column], true) {
                     return Err(self.error(format!(
                         "duplicate active column '{}' in selected record fields",
                         layout.schema.field(column).name()
@@ -286,6 +356,11 @@ impl ConditionalLayout {
         {
             return Err(self.error("selected record fields do not cover the record length (no matching record condition or missing FILLER)"));
         }
+        let selected = Arc::new(selected);
+        if cache.selections.len() == 128 {
+            cache.selections.clear();
+        }
+        cache.selections.insert(cache.key.clone(), selected.clone());
         Ok(selected)
     }
 }
@@ -308,23 +383,27 @@ fn decode_field(field: &CompiledField, body: &[u8], values: &mut impl ValueSink)
 }
 
 impl RecordLayout {
-    pub(crate) fn decode_physical(&self, body: &[u8], values: &mut impl ValueSink) -> Result<()> {
+    pub(crate) fn decode_physical(
+        &self,
+        body: &[u8],
+        values: &mut impl ValueSink,
+        scratch: &mut DecodeScratch,
+    ) -> Result<()> {
         let Some(conditional) = &self.conditional else {
             for field in &self.fields {
                 decode_field(field, body, values)?;
             }
             return Ok(());
         };
-        let mut row: Vec<_> = self
-            .schema
-            .fields()
-            .iter()
-            .map(|f| ScalarValue::try_from(f.data_type()).map_err(Error::from))
-            .collect::<Result<_>>()?;
-        let mut decoded = Vec::new();
+        let DecodeScratch {
+            row,
+            decoded,
+            selection,
+        } = scratch;
+        row.clone_from(&conditional.nulls);
         let mut decode = |i: usize| -> Result<()> {
             decoded.clear();
-            decode_field(&self.fields[i], body, &mut decoded)?;
+            decode_field(&self.fields[i], body, decoded)?;
             for (column, value) in conditional.columns[i].iter().zip(decoded.drain(..)) {
                 row[*column] = value;
             }
@@ -334,9 +413,8 @@ impl RecordLayout {
             decode(i)?;
         }
         let arrays = conditional
-            .common
+            .input_columns
             .iter()
-            .flat_map(|&i| conditional.columns[i].iter())
             .map(|&c| row[c].to_array_of_size(1).map_err(Error::from))
             .collect::<Result<Vec<_>>>()?;
         let batch = RecordBatch::try_new_with_options(
@@ -345,24 +423,24 @@ impl RecordLayout {
             &RecordBatchOptions::new().with_row_count(Some(1)),
         )
         .map_err(|e| Error::input(e.to_string()))?;
-        let predicates = conditional.evaluate(&batch)?;
-        let selected = conditional.select(self, &predicates, 0)?;
+        let predicates = conditional.evaluate_projected(&batch)?;
+        let selected = conditional.select(self, &predicates, 0, selection)?;
         if body.len() < selected.length || !selected.rest && body.len() != selected.length {
             return Err(Error::input(
                 "record body does not match selected record condition length",
             ));
         }
-        for i in selected.fields {
+        for &i in &selected.fields {
             if self.fields[i].spec.when.is_none() {
                 continue;
             }
             decoded.clear();
-            decode_field(&self.fields[i], body, &mut decoded)?;
+            decode_field(&self.fields[i], body, decoded)?;
             for (column, value) in conditional.columns[i].iter().zip(decoded.drain(..)) {
                 row[*column] = value;
             }
         }
-        for value in row {
+        for value in row.drain(..) {
             values.scalar(value)?;
         }
         Ok(())

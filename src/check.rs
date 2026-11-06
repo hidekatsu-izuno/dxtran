@@ -5,12 +5,14 @@ use crate::{
 };
 use datafusion::{
     arrow::{
-        array::{Array, AsArray},
         datatypes::SchemaRef,
         record_batch::{RecordBatch, RecordBatchOptions},
     },
     common::{DFSchema, ScalarValue},
-    physical_expr::PhysicalExpr,
+    physical_expr::{
+        PhysicalExpr,
+        utils::{collect_columns, reassign_expr_columns},
+    },
     prelude::SessionContext,
 };
 use serde_json::json;
@@ -33,6 +35,7 @@ pub(crate) struct Checks {
     schema: SchemaRef,
     id: String,
     output: bool,
+    columns: Vec<usize>,
 }
 impl Default for Checks {
     fn default() -> Self {
@@ -41,6 +44,7 @@ impl Default for Checks {
             schema: Arc::new(datafusion::arrow::datatypes::Schema::empty()),
             id: String::new(),
             output: false,
+            columns: Vec::new(),
         }
     }
 }
@@ -79,6 +83,27 @@ impl Checks {
                 origin,
             });
         }
+        compiled.columns = compiled
+            .rules
+            .iter()
+            .flat_map(|r| {
+                collect_columns(&r.expression)
+                    .into_iter()
+                    .map(|c| c.index())
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        compiled.schema = Arc::new(
+            compiled
+                .schema
+                .project(&compiled.columns)
+                .map_err(|e| Error::config(e.to_string()))?,
+        );
+        for rule in &mut compiled.rules {
+            rule.expression = reassign_expr_columns(rule.expression.clone(), &compiled.schema)
+                .map_err(|e| Error::config(e.to_string()))?;
+        }
         Ok(compiled)
     }
     pub(crate) fn is_empty(&self) -> bool {
@@ -95,9 +120,10 @@ impl Checks {
         if self.is_empty() {
             return Ok(());
         }
-        let arrays = values
+        let arrays = self
+            .columns
             .iter()
-            .map(|v| v.to_array_of_size(1))
+            .map(|&i| values[i].to_array_of_size(1))
             .collect::<datafusion::error::Result<Vec<_>>>()
             .map_err(|e| self.error(e.to_string()))?;
         let batch = RecordBatch::try_new_with_options(
@@ -106,56 +132,63 @@ impl Checks {
             &RecordBatchOptions::new().with_row_count(Some(1)),
         )
         .map_err(|e| self.error(e.to_string()))?;
-        self.batch(&batch, record - 1)
+        self.check_row(&batch, 0, record)
+    }
+    /// Project once per batch; only columns referenced by checks are sliced.
+    pub(crate) fn project(&self, batch: &RecordBatch) -> Result<RecordBatch> {
+        batch
+            .project(&self.columns)
+            .map_err(|e| self.error(e.to_string()))
     }
     pub(crate) fn batch(&self, batch: &RecordBatch, completed: u64) -> Result<()> {
         if self.is_empty() {
             return Ok(());
         }
-        let side = if self.output { "output" } else { "input" };
+        let batch = self.project(batch)?;
         for row in 0..batch.num_rows() {
-            let record = completed + row as u64 + 1;
-            let batch = batch.slice(row, 1);
-            for (i, rule) in self.rules.iter().enumerate() {
-                let location = format!(
+            self.check_row(&batch, row, completed + row as u64 + 1)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn check_row(&self, batch: &RecordBatch, row: usize, record: u64) -> Result<()> {
+        let side = if self.output { "output" } else { "input" };
+        let batch = batch.slice(row, 1);
+        for (i, rule) in self.rules.iter().enumerate() {
+            let location = || {
+                format!(
                     "{side} {} record {record} check {} {}",
                     self.id,
                     i + 1,
                     rule.origin
-                );
-                let result = rule
-                    .expression
-                    .evaluate(&batch)
-                    .and_then(|v| v.into_array(1))
-                    .map_err(|_| {
-                        self.error("check.when SQL evaluation failed")
-                            .context(&location)
-                    })?;
-                let result = result.as_boolean();
-                if result.is_null(0) || !result.value(0) {
-                    continue;
-                }
-                let level = match rule.level {
-                    CheckLevel::Error => {
-                        return Err(self
-                            .error(format!("check error: {}", rule.message))
-                            .context(&location));
-                    }
-                    CheckLevel::Warn => "warn",
-                    CheckLevel::Info => "info",
-                };
-                let message = json!({"event":"check","level":level,"side":side,"definition":self.id,
-                    "record":record,"check":i + 1,"message":rule.message});
-                let written = if matches!(rule.level, CheckLevel::Info) {
-                    writeln!(io::stdout().lock(), "{message}")
-                } else {
-                    writeln!(io::stderr().lock(), "{message}")
-                };
-                written.map_err(|e| {
-                    self.error(format!("check log write failed: {e}"))
-                        .context(location)
-                })?;
+                )
+            };
+            let result = rule.expression.evaluate(&batch).map_err(|_| {
+                self.error("check.when SQL evaluation failed")
+                    .context(location())
+            })?;
+            if !crate::predicate::is_true(&result, 0) {
+                continue;
             }
+            let level = match rule.level {
+                CheckLevel::Error => {
+                    return Err(self
+                        .error(format!("check error: {}", rule.message))
+                        .context(location()));
+                }
+                CheckLevel::Warn => "warn",
+                CheckLevel::Info => "info",
+            };
+            let message = json!({"event":"check","level":level,"side":side,"definition":self.id,
+                    "record":record,"check":i + 1,"message":rule.message});
+            let written = if matches!(rule.level, CheckLevel::Info) {
+                writeln!(io::stdout().lock(), "{message}")
+            } else {
+                writeln!(io::stderr().lock(), "{message}")
+            };
+            written.map_err(|e| {
+                self.error(format!("check log write failed: {e}"))
+                    .context(location())
+            })?;
         }
         Ok(())
     }

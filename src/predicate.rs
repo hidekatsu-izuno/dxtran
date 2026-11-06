@@ -8,6 +8,22 @@ use datafusion::{
 };
 use std::sync::Arc;
 
+pub(crate) fn is_true(value: &datafusion::logical_expr::ColumnarValue, row: usize) -> bool {
+    use datafusion::{
+        arrow::array::{Array, AsArray},
+        common::ScalarValue,
+        logical_expr::ColumnarValue,
+    };
+    match value {
+        ColumnarValue::Scalar(ScalarValue::Boolean(value)) => *value == Some(true),
+        ColumnarValue::Array(array) => {
+            let values = array.as_boolean();
+            !values.is_null(row) && values.value(row)
+        }
+        _ => unreachable!("compiled Boolean predicate"),
+    }
+}
+
 pub(crate) fn compile(
     context: &SessionContext,
     sql: &str,

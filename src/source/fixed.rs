@@ -147,6 +147,7 @@ impl FixedRanges {
             })
             .collect();
         let mut rows = 0;
+        let mut scratch = crate::layout::DecodeScratch::default();
         for (index, record) in raw.chunks(self.stride).enumerate() {
             if index % 256 == 0 {
                 check_cancelled(cancelled)?;
@@ -172,7 +173,7 @@ impl FixedRanges {
             };
             self.source
                 .layout
-                .decode_physical(body, &mut row)
+                .decode_physical(body, &mut row, &mut scratch)
                 .map_err(fail)?;
             if self.source.order_name.is_some() {
                 let key = order_key(self.source.dataset_no, number);

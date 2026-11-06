@@ -339,3 +339,39 @@ fn null_and_bit_common_fields_can_select_a_record_definition() {
     assert!(second[0].is_null());
     assert_eq!(second[1], ScalarValue::Utf8(Some("X".into())));
 }
+
+#[test]
+fn conditional_selection_survives_more_than_128_combinations_and_cache_eviction() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut definitions =
+        vec![json!({"name":"n","type":"uzoned","length":3,"precision":3,"zone":"ascii"})];
+    for bit in 0..8 {
+        let mask = 1 << bit;
+        definitions.push(json!({"name":format!("v{bit}"),"offset":3+bit,"length":1,
+            "when":format!("(CAST(n AS BIGINT) & {mask}) <> 0")}));
+        definitions.push(json!({"offset":3+bit,"length":1,
+            "when":format!("(CAST(n AS BIGINT) & {mask}) = 0")}));
+    }
+    let mut bytes = Vec::new();
+    for n in (0..256).cycle().take(768) {
+        bytes.extend_from_slice(format!("{n:03}").as_bytes());
+        for bit in 0..8 {
+            bytes.push(if n & (1 << bit) != 0 {
+                b'A' + bit
+            } else {
+                b' '
+            });
+        }
+    }
+    fs::write(dir.path().join("in.dat"), &bytes).unwrap();
+    let definitions = json!(definitions);
+    job(
+        dir.path(),
+        input(definitions.clone(), "fixed"),
+        json!([output(definitions, "fixed")]),
+    );
+    for threads in [1, 4] {
+        ok(invoke(dir.path(), "run", false, threads));
+        assert_eq!(fs::read(dir.path().join("out.dat")).unwrap(), bytes);
+    }
+}

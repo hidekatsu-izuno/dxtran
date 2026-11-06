@@ -18,6 +18,8 @@ Rust製の `parquet_fixture` exampleで、行ごとに値が異なる文字列8�
 
 ## check・少数列選択・大量process
 
+共通化・チェック処理・process計画の改善と変更前後の比較は、[共通化と実行コストの改善](REVIEW_IMPROVEMENTS.md)を参照してください。比較スクリプトは `--compare-dxt /path/to/before/dxt` に対応し、連鎖するprocess、SQL関数、バイナリ・条件付きレイアウトも測定します。
+
 ```sh
 python3 -B benchmarks/review_workloads.py --rows 65536 --threads 1 4 --repeats 5 \
   --process-counts 100 1000 --result benchmarks/results/review-workloads.json

@@ -1,20 +1,18 @@
 //! Explicit conversions between SQL text and bytes in a named character set.
+use super::arguments::{Arguments, Cache};
 use crate::encoding::{TextEncoding, encoded_space, pad_encoded};
 use datafusion::{
     arrow::{
         array::{ArrayRef, BinaryBuilder, StringBuilder},
         datatypes::DataType,
     },
-    common::{Result, ScalarValue, exec_datafusion_err, plan_datafusion_err},
+    common::{Result, exec_datafusion_err, plan_datafusion_err},
     logical_expr::{
         ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
     },
     prelude::SessionContext,
 };
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    sync::Arc,
-};
+use std::{borrow::Cow, sync::Arc};
 
 pub(super) fn register(context: &SessionContext) {
     for encode in [false, true] {
@@ -95,19 +93,12 @@ impl ScalarUDFImpl for CharsetFunction {
                 .map(ColumnarValue::data_type)
                 .collect::<Vec<_>>(),
         )?;
-        let scalar = args
-            .args
-            .iter()
-            .all(|a| matches!(a, ColumnarValue::Scalar(_)));
-        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
+        let arguments = Arguments::new(&args.args)?;
         let mut texts = StringBuilder::new();
         let mut binaries = BinaryBuilder::new();
-        let mut encodings = HashMap::new();
-        for row in 0..arrays[0].len() {
-            if arrays
-                .iter()
-                .any(|a| a.data_type() == &DataType::Null || a.is_null(row))
-            {
+        let mut encodings = Cache::default();
+        for row in 0..arguments.rows() {
+            if arguments.is_null(row) {
                 if self.encode {
                     binaries.append_null();
                 } else {
@@ -115,43 +106,35 @@ impl ScalarUDFImpl for CharsetFunction {
                 }
                 continue;
             }
-            let encoding = super::string(&arrays[1], row)?;
-            let space = if arrays.len() == 4 {
-                super::string(&arrays[3], row)?
+            let encoding = arguments.text(1, row)?;
+            let space = if arguments.len() == 4 {
+                arguments.text(3, row)?
             } else {
-                " ".into()
+                " "
             };
             let key = (encoding, space);
-            let width = arrays.get(2).map(|a| byte_length(a, row)).transpose()?;
-            if encodings.len() == 128 && !encodings.contains_key(&key) {
-                encodings.clear();
-            }
-            let (encoding, space) = match encodings.entry(key) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => {
-                    let encoding = TextEncoding::resolve(&entry.key().0)
-                        .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?;
-                    let space = if width.is_some() {
-                        encoded_space(encoding, &entry.key().1)
-                            .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?
-                    } else {
-                        Vec::new()
-                    };
-                    entry.insert((encoding, space))
-                }
-            };
+            let width = (arguments.len() >= 3)
+                .then(|| byte_length(&arguments, row))
+                .transpose()?;
+            let (encoding, space) = encodings.get(key, |key| {
+                let encoding = TextEncoding::resolve(key.0)
+                    .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?;
+                let space = if width.is_some() {
+                    encoded_space(encoding, key.1)
+                        .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?
+                } else {
+                    Vec::new()
+                };
+                Ok((encoding, space))
+            })?;
             let bytes = if self.encode {
-                encoding
-                    .encode(&super::string(&arrays[0], row)?)
-                    .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?
+                Cow::Owned(
+                    encoding
+                        .encode(arguments.text(0, row)?)
+                        .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?,
+                )
             } else {
-                match ScalarValue::try_from_array(&arrays[0], row)? {
-                    ScalarValue::Binary(Some(b))
-                    | ScalarValue::LargeBinary(Some(b))
-                    | ScalarValue::BinaryView(Some(b))
-                    | ScalarValue::FixedSizeBinary(_, Some(b)) => b,
-                    _ => return Err(exec_datafusion_err!("icu_decode requires binary")),
-                }
+                Cow::Borrowed(arguments.binary(0, row)?)
             };
             if bytes.len() > crate::framing::MAX_RECORD {
                 return Err(exec_datafusion_err!(
@@ -160,8 +143,10 @@ impl ScalarUDFImpl for CharsetFunction {
                 ));
             }
             let bytes = if let Some(width) = width {
-                pad_encoded(&bytes, width, space, *encoding, false)
-                    .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?
+                Cow::Owned(
+                    pad_encoded(&bytes, width, space, *encoding, false)
+                        .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?,
+                )
             } else {
                 bytes
             };
@@ -179,33 +164,12 @@ impl ScalarUDFImpl for CharsetFunction {
         } else {
             Arc::new(texts.finish())
         };
-        if scalar {
-            Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
-                &output, 0,
-            )?))
-        } else {
-            Ok(ColumnarValue::Array(output))
-        }
+        arguments.finish(output)
     }
 }
 
-fn byte_length(array: &ArrayRef, row: usize) -> Result<usize> {
-    let value = ScalarValue::try_from_array(array, row)?;
-    let length = match value {
-        ScalarValue::Int8(Some(n)) => i128::from(n),
-        ScalarValue::Int16(Some(n)) => i128::from(n),
-        ScalarValue::Int32(Some(n)) => i128::from(n),
-        ScalarValue::Int64(Some(n)) => i128::from(n),
-        ScalarValue::UInt8(Some(n)) => i128::from(n),
-        ScalarValue::UInt16(Some(n)) => i128::from(n),
-        ScalarValue::UInt32(Some(n)) => i128::from(n),
-        ScalarValue::UInt64(Some(n)) => i128::from(n),
-        _ => {
-            return Err(exec_datafusion_err!(
-                "encoding byte length must be an integer"
-            ));
-        }
-    };
+fn byte_length(arguments: &Arguments<'_>, row: usize) -> Result<usize> {
+    let length = arguments.integer(2, row)?;
     usize::try_from(length)
         .ok()
         .filter(|n| *n <= crate::framing::MAX_RECORD)

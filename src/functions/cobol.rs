@@ -1,4 +1,5 @@
 //! Fixed-point numeric PICTURE editing, following a COBOL numeric-edited MOVE.
+use super::arguments::{Arguments, Cache};
 use datafusion::{
     arrow::{array::StringBuilder, datatypes::DataType},
     common::{Result, ScalarValue, exec_datafusion_err, plan_datafusion_err},
@@ -7,7 +8,6 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use std::collections::{HashMap, hash_map::Entry};
 
 pub(super) fn register(context: &SessionContext) {
     context.register_udf(ScalarUDF::from(CobolToChar {
@@ -71,53 +71,20 @@ impl ScalarUDFImpl for CobolToChar {
                 .map(ColumnarValue::data_type)
                 .collect::<Vec<_>>(),
         )?;
-        let scalar = args
-            .args
-            .iter()
-            .all(|a| matches!(a, ColumnarValue::Scalar(_)));
-        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
+        let arguments = Arguments::new(&args.args)?;
         let mut output = StringBuilder::new();
-        let mut pictures = HashMap::new();
-        for row in 0..arrays[0].len() {
-            if arrays
-                .iter()
-                .any(|a| a.data_type() == &DataType::Null || a.is_null(row))
-            {
+        let mut pictures = Cache::default();
+        for row in 0..arguments.rows() {
+            if arguments.is_null(row) {
                 output.append_null();
                 continue;
             }
-            let pattern = match ScalarValue::try_from_array(&arrays[1], row)? {
-                ScalarValue::Utf8(Some(s))
-                | ScalarValue::LargeUtf8(Some(s))
-                | ScalarValue::Utf8View(Some(s)) => s,
-                _ => {
-                    return Err(exec_datafusion_err!(
-                        "cobol_to_char requires a PICTURE string"
-                    ));
-                }
-            };
-            // Dynamic formats must not grow the batch-local cache without bound.
-            if pictures.len() == 128 && !pictures.contains_key(&pattern) {
-                pictures.clear();
-            }
-            let picture = match pictures.entry(pattern) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => {
-                    let picture = Picture::compile(entry.key())?;
-                    entry.insert(picture)
-                }
-            };
-            let number = Number::from_scalar(ScalarValue::try_from_array(&arrays[0], row)?)?;
+            let pattern = arguments.text(1, row)?;
+            let picture = pictures.get(pattern, |pattern| Picture::compile(pattern))?;
+            let number = Number::from_scalar(arguments.value(0, row)?)?;
             output.append_value(picture.format(&number));
         }
-        let output = output.finish();
-        if scalar {
-            Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
-                &output, 0,
-            )?))
-        } else {
-            Ok(ColumnarValue::Array(std::sync::Arc::new(output)))
-        }
+        arguments.finish(std::sync::Arc::new(output.finish()))
     }
 }
 

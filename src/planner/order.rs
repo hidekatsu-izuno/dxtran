@@ -14,7 +14,6 @@ use datafusion::logical_expr::logical_plan::{
 };
 use datafusion::{
     arrow::datatypes::DataType,
-    catalog::view::ViewTable,
     common::{
         Column, JoinType,
         tree_node::{Transformed, TreeNode},
@@ -29,6 +28,7 @@ use datafusion::{
     },
 };
 use std::{collections::BTreeMap, sync::Arc};
+#[derive(Clone, Debug)]
 pub(super) struct Ordered {
     pub(super) plan: LogicalPlan,
     pub(super) key: Expr,
@@ -226,24 +226,36 @@ impl OrderPlanner {
             let plan = LogicalPlan::TableScan(scan);
             let key = key_column(&plan, &name);
             Ok(Ordered { plan, key })
-        } else if let Some(view) = provider.downcast_ref::<ViewTable>() {
-            let mut input = self.rewrite(view.logical_plan())?;
+        } else if let Some(view) = provider.downcast_ref::<super::view::ProcessView>() {
+            // The immutable ordered plan was built once in dependency order.
+            // Each reference gets its own relation qualifier; private keys
+            // remain scoped inside that alias even for repeated/self joins.
+            let mut input = view.ordered().clone();
             let key_name = if let Expr::Column(c) = &input.key {
                 c.name.clone()
             } else {
                 unreachable!()
             };
+            // A relation alias changes qualifiers, not values or order. Replace
+            // adjacent aliases so passthrough chains do not create deep trees.
+            while let LogicalPlan::SubqueryAlias(alias) = input.plan {
+                input.plan = (*alias.input).clone();
+            }
             input.plan = LogicalPlanBuilder::from(input.plan)
                 .alias(scan.table_name.clone())?
                 .build()?;
             input.key = key_column(&input.plan, &key_name);
-            let cols = scan
+            let cols: Vec<_> = scan
                 .projected_schema
                 .columns()
                 .into_iter()
                 .map(Expr::Column)
                 .collect();
-            self.project_key(input.plan, cols, input.key)
+            if cols == public_columns(&input.plan) {
+                Ok(input)
+            } else {
+                self.project_key(input.plan, cols, input.key)
+            }
         } else {
             Err(Error::sql("unconfigured table source is forbidden"))
         }
@@ -251,6 +263,11 @@ impl OrderPlanner {
 
     fn rewrite_projection(&mut self, proj: &Projection) -> Result<Ordered> {
         let input = self.rewrite(&proj.input)?;
+        // Keep passthrough process chains shallow; their public columns and
+        // existing order key already express this projection exactly.
+        if proj.expr == public_columns(&input.plan) {
+            return Ok(input);
+        }
         let (plan, exprs) = self.predicate_subqueries(input.plan, proj.expr.clone())?;
         self.project_key(plan, exprs, input.key)
     }

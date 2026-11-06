@@ -25,7 +25,15 @@ impl CsvEncoder {
         cancelled: Option<&AtomicBool>,
     ) -> Result<usize> {
         let mut text = String::new();
+        let checked = (!self.layout.checks.is_empty())
+            .then(|| self.layout.checks.project(batch))
+            .transpose()?;
         for row in offset..batch.num_rows() {
+            if let Some(checked) = &checked {
+                self.layout
+                    .checks
+                    .check_row(checked, row, start_row + row as u64 + 1)?;
+            }
             let record_start = buffer.len();
             if row % 256 == 0
                 && let Some(cancelled) = cancelled

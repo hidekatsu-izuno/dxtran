@@ -9,6 +9,9 @@ pub(crate) struct PhysicalEncoder {
     indices: Vec<Vec<usize>>,
 }
 impl PhysicalEncoder {
+    pub(super) fn worthwhile(&self) -> bool {
+        crate::parallel::worthwhile(&self.layout)
+    }
     pub(super) fn new(dataset: &Dataset, layout: &RecordLayout, indices: &[Vec<usize>]) -> Self {
         Self {
             id: dataset.id.clone(),
@@ -45,10 +48,15 @@ impl PhysicalEncoder {
         let mut bytes = Vec::new();
         let mut values = Vec::new();
         let all_fields: Vec<_> = (0..self.layout.fields.len()).collect();
+        let mut selection = crate::layout::SelectionCache::default();
+        let checked = (!self.layout.checks.is_empty())
+            .then(|| self.layout.checks.project(batch))
+            .transpose()?;
         let predicates = self
             .layout
             .conditional
             .as_ref()
+            .filter(|_| checked.is_none())
             .map(|c| c.evaluate(batch))
             .transpose()
             .map_err(|e| {
@@ -60,16 +68,39 @@ impl PhysicalEncoder {
                 ))
             })?;
         for row in 0..batch.num_rows() {
+            if let Some(checked) = &checked {
+                self.layout.checks.check_row(checked, row, *rows + 1)?;
+            }
             if row % 256 == 0
                 && let Some(cancelled) = cancelled
             {
                 check_cancelled(cancelled)?;
             }
+            let row_predicates = if checked.is_some() {
+                self.layout
+                    .conditional
+                    .as_ref()
+                    .map(|c| c.evaluate(&batch.slice(row, 1)))
+                    .transpose()
+                    .map_err(|e| e.context(format!("output {} record {}", self.id, *rows + 1)))?
+            } else {
+                None
+            };
             let selected = self
                 .layout
                 .conditional
                 .as_ref()
-                .map(|c| c.select(&self.layout, predicates.as_ref().unwrap(), row))
+                .map(|c| {
+                    c.select(
+                        &self.layout,
+                        row_predicates
+                            .as_ref()
+                            .or(predicates.as_ref())
+                            .expect("conditional predicates"),
+                        if checked.is_some() { 0 } else { row },
+                        &mut selection,
+                    )
+                })
                 .transpose()
                 .map_err(|e| e.context(format!("output {} record {}", self.id, *rows + 1)))?;
             body.clear();
@@ -87,18 +118,21 @@ impl PhysicalEncoder {
                     if f.kind == FieldType::String {
                         let column = batch.column(indices[0]);
                         if !column.is_null(row) {
-                            let text = match column.data_type() {
-                                DataType::Utf8 => Some(column.as_string::<i32>().value(row)),
-                                DataType::LargeUtf8 => Some(column.as_string::<i64>().value(row)),
-                                DataType::Utf8View => Some(column.as_string_view().value(row)),
-                                _ => None,
-                            };
+                            let text = crate::arrow_value::text(column.as_ref(), row);
                             if let Some(text) = text {
                                 f.encode_string_into(text, &mut bytes)?;
                                 place_field(&mut body, f.offset, &bytes);
                                 return Ok(());
                             }
                         }
+                    }
+                    if matches!(f.kind, FieldType::Binary | FieldType::Bstring)
+                        && let Some(value) =
+                            crate::arrow_value::binary(batch.column(indices[0]).as_ref(), row)
+                    {
+                        f.encode_binary_into(value, &mut bytes)?;
+                        place_field(&mut body, f.offset, &bytes);
+                        return Ok(());
                     }
                     if f.kind.decimal() && f.kind != FieldType::Decimal || f.scaled_integer() {
                         let column = batch.column(indices[0]);

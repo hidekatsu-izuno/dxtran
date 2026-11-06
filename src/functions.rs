@@ -1,4 +1,5 @@
 //! SQL functions for numeric editing, character encodings, and ICU4X datetimes.
+mod arguments;
 mod charset;
 mod cobol;
 mod encoded;
@@ -11,11 +12,12 @@ use crate::{
         tokenize,
     },
 };
+use arguments::{Arguments, Cache};
 use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, Offset, TimeZone};
 use chrono_tz::Tz;
 use datafusion::{
     arrow::{
-        array::{Array, ArrayRef, new_empty_array},
+        array::new_empty_array,
         datatypes::{DataType, TimeUnit},
     },
     common::{Result, ScalarValue, exec_datafusion_err, plan_datafusion_err},
@@ -24,7 +26,6 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use std::collections::HashMap;
 
 /// Register dxtran's SQL functions in a DataFusion session.
 pub fn register(context: &SessionContext) {
@@ -135,40 +136,32 @@ impl ScalarUDFImpl for IcuFunction {
                 .map(ColumnarValue::data_type)
                 .collect::<Vec<_>>(),
         )?;
-        let scalar = args
-            .args
-            .iter()
-            .all(|a| matches!(a, ColumnarValue::Scalar(_)));
-        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
-        let rows = arrays[0].len();
+        let arguments = Arguments::new(&args.args)?;
+        let rows = arguments.rows();
         let null = ScalarValue::try_from(&self.kind.data_type())?;
-        let mut cache = HashMap::new();
+        let mut cache = Cache::default();
         let mut values = Vec::with_capacity(rows);
         for row in 0..rows {
-            if arrays
-                .iter()
-                .any(|a| a.data_type() == &DataType::Null || a.is_null(row))
-            {
+            if arguments.is_null(row) {
                 values.push(null.clone());
                 continue;
             }
-            let pattern = string(&arrays[1], row)?;
-            let locale = if arrays.len() >= 3 {
-                string(&arrays[2], row)?
+            let pattern = arguments.text(1, row)?;
+            let locale = if arguments.len() >= 3 {
+                arguments.text(2, row)?
             } else {
-                "en-US".into()
+                "en-US"
             };
-            let timezone = if arrays.len() == 4 {
-                Some(string(&arrays[3], row)?)
+            let timezone = if arguments.len() == 4 {
+                Some(arguments.text(3, row)?)
             } else {
                 None
             };
             let key = (pattern, locale, timezone);
-            if !cache.contains_key(&key) {
-                let locale =
-                    CalendarLocale::new(&key.1).map_err(|e| exec_datafusion_err!("{e}"))?;
-                let compiled = if self.kind == Kind::Char {
-                    let tokens = tokenize(&key.0).map_err(|e| exec_datafusion_err!("{e}"))?;
+            let compiled = cache.get(key, |key| {
+                let locale = CalendarLocale::new(key.1).map_err(|e| exec_datafusion_err!("{e}"))?;
+                Ok(if self.kind == Kind::Char {
+                    let tokens = tokenize(key.0).map_err(|e| exec_datafusion_err!("{e}"))?;
                     let parts: Vec<char> = tokens
                         .iter()
                         .filter_map(|t| {
@@ -181,7 +174,7 @@ impl ScalarUDFImpl for IcuFunction {
                         .collect();
                     Compiled::Format {
                         formatter: Box::new(
-                            Formatter::new(&key.0, &locale)
+                            Formatter::new(key.0, &locale)
                                 .map_err(|e| exec_datafusion_err!("{e}"))?,
                         ),
                         date: parts.iter().any(|c| "GyYuUrQqMLlwWdDFgEec".contains(*c)),
@@ -190,9 +183,9 @@ impl ScalarUDFImpl for IcuFunction {
                     }
                 } else {
                     let field = FieldConfig {
-                        datetime_pattern: Some(key.0.clone()),
+                        datetime_pattern: Some(key.0.to_owned()),
                         unit: Some("us".into()),
-                        timezone: Some(key.2.clone().unwrap_or_else(|| "UTC".into())),
+                        timezone: Some(key.2.unwrap_or("UTC").to_owned()),
                         timezone_set: true,
                         ..Default::default()
                     };
@@ -205,17 +198,16 @@ impl ScalarUDFImpl for IcuFunction {
                         Pattern::compile_icu(&field, kind, &locale)
                             .map_err(|e| exec_datafusion_err!("{e}"))?,
                     ))
-                };
-                cache.insert(key.clone(), compiled);
-            }
-            let value = match &cache[&key] {
+                })
+            })?;
+            let value = match compiled {
                 Compiled::Format {
                     formatter,
                     date,
                     time,
                     offset,
                 } => {
-                    let value = ScalarValue::try_from_array(&arrays[0], row)?;
+                    let value = arguments.value(0, row)?;
                     let input_date =
                         matches!(value, ScalarValue::Date32(_) | ScalarValue::Date64(_));
                     let input_time = matches!(
@@ -231,7 +223,7 @@ impl ScalarUDFImpl for IcuFunction {
                             self.name()
                         ));
                     }
-                    let local = local_datetime(&value, key.2.as_deref())?;
+                    let local = local_datetime(&value, key.2)?;
                     if *offset && !local.aware {
                         return Err(exec_datafusion_err!(
                             "{} timezone pattern requires a timestamp with a timezone",
@@ -245,9 +237,9 @@ impl ScalarUDFImpl for IcuFunction {
                     ))
                 }
                 Compiled::Parse(pattern) => {
-                    let text = string(&arrays[0], row)?;
+                    let text = arguments.text(0, row)?;
                     let value = pattern
-                        .parse(&text)
+                        .parse(text)
                         .map_err(|e| exec_datafusion_err!("{}: {e}", self.name()))?;
                     // Input zones determine the instant; SQL results use a stable UTC type.
                     if let ScalarValue::TimestampMicrosecond(value, _) = value {
@@ -264,13 +256,7 @@ impl ScalarUDFImpl for IcuFunction {
         } else {
             ScalarValue::iter_to_array(values)?
         };
-        if scalar {
-            Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
-                &array, 0,
-            )?))
-        } else {
-            Ok(ColumnarValue::Array(array))
-        }
+        arguments.finish(array)
     }
 }
 
@@ -282,17 +268,6 @@ enum Compiled {
         offset: bool,
     },
     Parse(Box<Pattern>),
-}
-
-fn string(array: &ArrayRef, row: usize) -> Result<String> {
-    match ScalarValue::try_from_array(array, row)? {
-        ScalarValue::Utf8(Some(s))
-        | ScalarValue::LargeUtf8(Some(s))
-        | ScalarValue::Utf8View(Some(s)) => Ok(s),
-        _ => Err(exec_datafusion_err!(
-            "ICU datetime argument must be a non-null string"
-        )),
-    }
 }
 
 struct LocalDateTime {

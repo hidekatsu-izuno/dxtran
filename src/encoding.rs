@@ -20,22 +20,33 @@ pub(crate) fn encoded_space(encoding: TextEncoding, space: &str) -> Result<Vec<u
 }
 
 pub(crate) fn pad_binary(bytes: &[u8], width: Option<usize>, space: &[u8]) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    pad_binary_into(bytes, width, space, &mut output)?;
+    Ok(output)
+}
+
+pub(crate) fn pad_binary_into(
+    bytes: &[u8],
+    width: Option<usize>,
+    space: &[u8],
+    output: &mut Vec<u8>,
+) -> Result<()> {
     let width = width.unwrap_or(bytes.len());
     let padding = width
         .checked_sub(bytes.len())
         .ok_or_else(|| Error::output("binary string exceeds byte length"))?;
-    if padding == 0 {
-        return Ok(bytes.to_vec());
-    }
-    if space.is_empty() || !padding.is_multiple_of(space.len()) {
+    if padding > 0 && (space.is_empty() || !padding.is_multiple_of(space.len())) {
         return Err(Error::output("space_char cannot fill exact byte width"));
     }
-    let mut output = Vec::with_capacity(width);
+    output.clear();
+    output.reserve(width);
     output.extend_from_slice(bytes);
-    for _ in 0..padding / space.len() {
-        output.extend_from_slice(space);
+    if padding > 0 {
+        for _ in 0..padding / space.len() {
+            output.extend_from_slice(space);
+        }
     }
-    Ok(output)
+    Ok(())
 }
 
 pub(crate) fn trim_binary<'a>(

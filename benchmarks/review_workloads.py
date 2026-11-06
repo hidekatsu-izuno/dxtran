@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure checks, 100-column Parquet projection, and large process graphs."""
+"""Compare checks, SQL functions, physical codecs, and process planning."""
 import argparse
 import copy
 import json
@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--process-counts", type=int, nargs="+", default=[100, 1000])
     parser.add_argument("--profile", choices=["release", "debug"], default="release")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--compare-dxt", type=Path)
+    parser.add_argument("--cases", nargs="+", help="run only these case names, including thread/before prefixes")
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--result", type=Path, default=ROOT / "benchmarks/results/review-workloads.json")
     args = parser.parse_args()
@@ -37,6 +39,10 @@ def main():
             command.append("--release")
         subprocess.run(command, cwd=ROOT, check=True)
     binary = ROOT / "target" / args.profile / "dxt"
+    binaries = {"": binary}
+    if args.compare_dxt:
+        args.compare_dxt = args.compare_dxt.resolve()
+        binaries["before_"] = args.compare_dxt
     fixture = binary.parent / "examples/parquet_fixture"
     args.result = args.result.resolve()
     args.result.parent.mkdir(parents=True, exist_ok=True)
@@ -51,11 +57,12 @@ def main():
             job = work / f"{name}.json"
             job.write_text(json.dumps(config))
             for threads in args.threads:
-                cases[f"{name}_threads_{threads}"] = {
-                    "command": [str(binary), command, str(job), "--threads", str(threads),
-                                "--memory-limit", "512MiB", "--temp-dir", str(stages)],
-                    "source": source, "expected": expected, "rows": rows,
-                }
+                for prefix, executable in binaries.items():
+                    cases[f"{prefix}{name}_threads_{threads}"] = {
+                        "command": [str(executable), command, str(job), "--threads", str(threads),
+                                    "--memory-limit", "512MiB", "--temp-dir", str(stages)],
+                        "source": source, "expected": expected, "rows": rows,
+                    }
 
         for columns in [16, 100]:
             data = work / str(columns)
@@ -80,6 +87,15 @@ def main():
                 add("parquet_100_select_2", projected, source, (narrow.stat().st_size, digest(narrow)), rows=args.rows)
             else:
                 add("check_none", config, source, full, rows=args.rows)
+                for name, sql, expected_line in [
+                    ("udf_length", "SELECT icu_length(text_0, 'utf-8') AS n FROM data", "15\n"),
+                    ("udf_datetime", "SELECT icu_to_char(DATE '2026-11-06', CASE WHEN amount_0 < 0 THEN 'yyyy-MM' ELSE 'yyyy-MM-dd' END) AS d FROM data", "2026-11-06\n"),
+                ]:
+                    expected = data / f"{name}.csv"
+                    expected.write_text(expected_line * args.rows)
+                    transformed = copy.deepcopy(config)
+                    transformed["output"][0]["sql"] = sql
+                    add(name, transformed, source, (expected.stat().st_size, digest(expected)), rows=args.rows)
                 rules = [{"when": when, "level": "error", "message": "fixture check failed"} for when in
                          ["amount_0 < 0", "length(text_0) <> 15", "amount_7 IS NULL"]]
                 for location in ["input", "output"]:
@@ -88,6 +104,24 @@ def main():
                         checked[location][0]["check"] = rules[:count]
                         add(f"check_{location}_{count}", checked, source, full, rows=args.rows)
 
+        for conditional in [False, True]:
+            name = "conditional_copy" if conditional else "binary_copy"
+            raw = work / f"{name}.dat"
+            with raw.open("wb") as writer:
+                for row in range(args.rows):
+                    writer.write((b"H" if row % 2 == 0 else b"D") + b"x" * 254 + bytes([row % 256]))
+            fields = [{"name": "payload", "type": "bstring", "length": 256, "trim": False}]
+            if conditional:
+                fields = [{"name": "record_type", "length": 1}]
+                fields += [{"name": name, "type": "bstring", "offset": 1, "length": 255,
+                            "trim": False, "when": f"record_type = '{kind}'"}
+                           for name, kind in [("header", "H"), ("detail", "D")]]
+            dataset = {"id": "data", "path": str(raw), "format": "fixed", "encoding": "utf-8",
+                       "fixed": {"record_separator": "none"}, "fields": fields}
+            dest = {**copy.deepcopy(dataset), "id": "result", "path": str(output), "sql": "SELECT * FROM data"}
+            add("conditional_copy" if conditional else "binary_copy", {"input": [dataset], "output": [dest]}, raw,
+                (raw.stat().st_size, digest(raw)), rows=args.rows)
+
         seed = work / "seed.csv"
         seed.write_text("n\n1\n")
         for count in args.process_counts:
@@ -95,14 +129,26 @@ def main():
                       "process": [{"id": f"p{i}", "sql": "SELECT * FROM seed"} for i in range(count)],
                       "output": [{"id": "result", "path": str(output), "format": "csv", "encoding": "utf-8", "sql": f"SELECT * FROM p{count-1}"}]}
             add(f"plan_independent_{count}", config, seed, command="check")
+            chained = copy.deepcopy(config)
+            for i, process in enumerate(chained["process"]):
+                process["sql"] = f"SELECT * FROM {'seed' if i == 0 else f'p{i-1}'}"
+            add(f"plan_chain_{count}", chained, seed, command="check")
+
+        if args.cases:
+            unknown = set(args.cases) - cases.keys()
+            if unknown:
+                parser.error(f"unknown cases: {sorted(unknown)}")
+            cases = {name: cases[name] for name in args.cases}
 
         results = {
             "environment": {"platform": platform.platform(), "cpu_count": os.cpu_count(),
                             "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
                             "affinity": sorted(os.sched_getaffinity(0)),
                             "binary_sha256": digest(binary), "fixture_sha256": digest(fixture),
+                            "comparison_binary_sha256": digest(args.compare_dxt) if args.compare_dxt else None,
                             "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip()},
             "settings": {**vars(args), "work_dir": str(args.work_dir), "result": str(args.result),
+                         "compare_dxt": str(args.compare_dxt) if args.compare_dxt else None,
                          "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "cache": "warm",
                          "order_seed": 20261106, "parquet_validation": "all columns, including unused columns"},
             "layouts": layouts, "plans": {}, "runs": [], "summary": {},
@@ -111,7 +157,9 @@ def main():
         }
         for name, case in cases.items():
             if case["expected"] is not None:
-                results["plans"][name] = subprocess.check_output([str(binary), "explain", case["command"][2]], text=True)
+                command = case["command"].copy()
+                command[1] = "explain"
+                results["plans"][name] = subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
         rng = random.Random(20261106)
         for phase, count in [("warmup", args.warmups), ("measured", args.repeats)]:
             for repetition in range(count):
@@ -149,6 +197,8 @@ def main():
                                         "rows_s": case["rows"] / wall if case["rows"] else None}
         assert digest(binary) == results["environment"]["binary_sha256"], "binary changed during measurement"
         assert digest(fixture) == results["environment"]["fixture_sha256"], "fixture changed during measurement"
+        if args.compare_dxt:
+            assert digest(args.compare_dxt) == results["environment"]["comparison_binary_sha256"], "comparison binary changed"
         args.result.write_text(json.dumps(results, indent=2) + "\n")
         print(json.dumps(results["summary"], indent=2))
 

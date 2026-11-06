@@ -7,6 +7,7 @@ use crate::{
     error::{Error, Result},
     field::{CompiledField, Direction},
 };
+pub(crate) use conditional::{DecodeScratch, SelectionCache};
 use datafusion::arrow::datatypes::{Field as ArrowField, Schema, SchemaRef};
 use std::{collections::BTreeSet, sync::Arc};
 

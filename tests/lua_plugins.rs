@@ -395,16 +395,20 @@ output:
     )
     .unwrap();
     let loaded = dxtran::config::load(&dir.path().join("job.json")).unwrap();
-    assert_eq!(loaded.input[0].path, dir.path().join("defs/plugin.lua"));
+    // The loader resolves paths from canonical configuration directories, which
+    // can differ from tempfile paths on Windows (verbatim paths and short names).
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let definitions = fs::canonicalize(dir.path().join("defs")).unwrap();
+    assert_eq!(loaded.input[0].path, definitions.join("plugin.lua"));
     let lua = loaded.input[0].lua.as_ref().unwrap();
-    assert_eq!(lua.base_dir, dir.path().join("defs"));
+    assert_eq!(lua.base_dir, definitions);
     assert_eq!(
         Path::new(&lua.libraries["original"]),
-        dir.path().join("defs/./lib-original.so")
+        definitions.join("lib-original.so")
     );
     assert_eq!(
         Path::new(&lua.libraries["local"]),
-        dir.path().join("./lib-local.so")
+        root.join("lib-local.so")
     );
     assert_eq!(lua.libraries["search"], "libsearch.so");
     assert_status(invoke(dir.path(), "run", false, 4), 0);

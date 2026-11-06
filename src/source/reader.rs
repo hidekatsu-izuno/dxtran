@@ -42,6 +42,7 @@ pub struct InputReader {
     row_base_size: usize,
     physical_row_bound: usize,
     checked_row: Option<Vec<ScalarValue>>,
+    decode_scratch: crate::layout::DecodeScratch,
 }
 impl InputReader {
     pub fn open(dataset: &Dataset, layout: &RecordLayout) -> Result<Self> {
@@ -59,6 +60,7 @@ impl InputReader {
                 row_base_size: 0,
                 physical_row_bound: 0,
                 checked_row: None,
+                decode_scratch: Default::default(),
             });
         }
         let file = File::open(&dataset.path)
@@ -149,6 +151,7 @@ impl InputReader {
             row_base_size,
             physical_row_bound,
             checked_row: None,
+            decode_scratch: Default::default(),
         })
     }
     pub fn next_row(&mut self) -> Result<Option<Vec<ScalarValue>>> {
@@ -255,18 +258,18 @@ impl InputReader {
         self.record_position = record_position;
         self.record = record;
         self.record_ready = true;
-        self.checked_row = None;
+        let mut checked_row = self.checked_row.take().unwrap_or_default();
         if !self.layout.checks.is_empty() {
             // Decode once, then retain the checked row across size measurement
             // and batch read-ahead. Neither path may emit a message twice.
-            let mut row = Vec::new();
-            self.decode_record(&mut row)?;
-            self.layout.checks.row(&row, record)?;
-            self.checked_row = Some(row);
+            checked_row.clear();
+            self.decode_record(&mut checked_row)?;
+            self.layout.checks.row(&checked_row, record)?;
+            self.checked_row = Some(checked_row);
         }
         Ok(true)
     }
-    pub(super) fn decode_record(&self, values: &mut impl ValueSink) -> Result<()> {
+    pub(super) fn decode_record(&mut self, values: &mut impl ValueSink) -> Result<()> {
         if let Some(row) = &self.checked_row {
             for value in row {
                 values.scalar(value.clone())?;
@@ -300,7 +303,7 @@ impl InputReader {
             }
         } else {
             self.layout
-                .decode_physical(&self.body, values)
+                .decode_physical(&self.body, values, &mut self.decode_scratch)
                 .map_err(context)?;
         }
         Ok(())

@@ -411,3 +411,43 @@ fn a_codec_failure_precedes_later_output_check_messages() {
     assert!(events(&result.stdout).is_empty());
     assert!(String::from_utf8_lossy(&result.stderr).contains("precision overflow"));
 }
+
+#[test]
+fn buffered_csv_checks_keep_record_numbers_and_stop_at_the_first_conversion_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut csv = String::from("id,amount\n");
+    for record in 1..=10000 {
+        csv.push_str(match record {
+            9000 => "bad,12\n",
+            9001 => "later,-1\n",
+            _ => "ok,1\n",
+        });
+    }
+    fs::write(dir.path().join("in.csv"), csv).unwrap();
+    let mut output = destination();
+    output["fields"] = json!([{"name":"amount","precision":1}]);
+    output["check"] = json!([
+        rule("FALSE", "error", "never"),
+        rule("amount <> 1", "info", "conversion-follows")
+    ]);
+    for threads in [1, 4] {
+        fs::write(dir.path().join("out.csv"), "previous").unwrap();
+        let result = invoke(
+            dir.path(),
+            source(),
+            json!([output.clone()]),
+            "run",
+            false,
+            threads,
+        );
+        assert_eq!(result.status.code(), Some(5));
+        let info = events(&result.stdout);
+        assert_eq!(info.len(), 1);
+        assert_eq!(info[0]["record"], 9000);
+        assert!(String::from_utf8_lossy(&result.stderr).contains("record 9000"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("out.csv")).unwrap(),
+            "previous"
+        );
+    }
+}

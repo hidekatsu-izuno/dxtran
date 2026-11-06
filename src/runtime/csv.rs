@@ -19,29 +19,6 @@ pub(super) async fn write(
     let start_row = sink.rows;
     let writer_uses_cpu = sink.csv_writer_uses_cpu();
     let writer_budget = budget.clone();
-    let (sender, mut receiver) = tokio::sync::mpsc::channel::<(String, usize)>(1);
-    let (finished, completion) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("dxtran-csv-writer".into())
-        .spawn(move || {
-            let result = (|| {
-                let mut sink = sink;
-                while let Some((text, rows)) = receiver.blocking_recv() {
-                    let _permit = if writer_uses_cpu {
-                        Some(
-                            futures::executor::block_on(writer_budget.acquire())
-                                .map_err(|e| Error::sql(e.to_string()))?,
-                        )
-                    } else {
-                        None
-                    };
-                    sink.write_csv_text(&text, rows)?;
-                }
-                Ok::<_, Error>(sink)
-            })();
-            let _ = finished.send(result);
-        })
-        .map_err(|e| Error::output(e.to_string()))?;
     let mut row = start_row;
     let batches = stream.map(move |batch| {
         batch.map_err(original_error).map(|batch| {
@@ -87,27 +64,13 @@ pub(super) async fn write(
             Ok(())
         }
     });
-    futures::pin_mut!(encoded);
-    let mut conversion_error = None;
-    while let Some(result) = encoded.next().await {
-        match result {
-            Ok(chunk) => {
-                if sender.send(chunk).await.is_err() {
-                    break;
-                }
-            }
-            Err(e) => {
-                conversion_error = Some(e);
-                break;
-            }
-        }
-    }
-    drop(sender);
-    let sink = completion
-        .await
-        .map_err(|e| Error::output(e.to_string()))??;
-    if let Some(error) = conversion_error {
-        return Err(error);
-    }
-    Ok(sink)
+    super::writer::write_chunks(
+        sink,
+        encoded,
+        writer_budget,
+        writer_uses_cpu,
+        "dxtran-csv-writer",
+        |sink, chunk: &String, rows| sink.write_csv_text(chunk, rows),
+    )
+    .await
 }

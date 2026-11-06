@@ -29,26 +29,25 @@ pub(super) fn process_order(job: &Job) -> Result<Vec<usize>> {
             })
         })
         .collect::<Result<_>>()?;
-    for (id, refs) in job.process.iter().map(|p| &p.id).zip(&deps).chain(
-        job.output.iter().map(|d| &d.id).zip(
-            job.output
-                .iter()
-                .map(|d| {
-                    references(d.sql.as_ref().unwrap()).map_err(|e| {
-                        e.context(format!(
-                            "output {} {}",
-                            d.id,
-                            d.sql_origin
-                                .as_ref()
-                                .map(ToString::to_string)
-                                .unwrap_or_default()
-                        ))
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?
-                .iter(),
-        ),
-    ) {
+    let output_deps = job
+        .output
+        .iter()
+        .map(|d| {
+            references(d.sql.as_ref().unwrap()).map_err(|e| {
+                e.context(format!(
+                    "output {} {}",
+                    d.id,
+                    d.sql_origin
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_default()
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let process_refs = job.process.iter().map(|p| &p.id).zip(&deps);
+    let output_refs = job.output.iter().map(|d| &d.id).zip(&output_deps);
+    for (id, refs) in process_refs.chain(output_refs) {
         for r in refs {
             if !input.contains(r) && !process.contains_key(r) {
                 return Err(Error::sql(format!("{id}: undefined table '{r}'")));

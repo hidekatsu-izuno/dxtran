@@ -2,6 +2,7 @@ mod cooperative;
 mod csv;
 mod fixed;
 mod signals;
+mod writer;
 use crate::{
     config,
     error::{Error, Result},
@@ -274,7 +275,13 @@ pub fn main_cli() -> i32 {
         }
     };
     let mut exit_codes = config::ExitCodes::default();
-    let result=runtime.block_on(async {tokio::select! {biased;_=signal_rx=>Err(Error::sql("interrupted")),result=execute(cli,&run_id,&mut exit_codes)=>result}});
+    let result = runtime.block_on(async {
+        tokio::select! {
+            biased;
+            _ = signal_rx => Err(Error::sql("interrupted")),
+            result = execute(cli, &run_id, &mut exit_codes) => result,
+        }
+    });
     drop(signals);
     let original_code = match result {
         Ok(()) => 0,

@@ -1,3 +1,4 @@
+mod arrow_value;
 mod check;
 mod compression;
 pub mod config;

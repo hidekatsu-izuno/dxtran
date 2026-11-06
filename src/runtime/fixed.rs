@@ -22,30 +22,6 @@ pub(super) async fn write(
     let writer_budget = budget.clone();
     // Keep disk writes independent of the CPU pool. Waiting for each blocking
     // write in the producer stopped polling/scheduling conversions during I/O.
-    let (sender, mut receiver) = tokio::sync::mpsc::channel::<(Vec<u8>, usize)>(1);
-    let (finished, completion) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("dxtran-fixed-writer".into())
-        .spawn(move || {
-            let result = (|| {
-                let mut sink = sink;
-                while let Some((bytes, rows)) = receiver.blocking_recv() {
-                    // Compression consumes CPU on this writer thread too.
-                    let _permit = if compressed {
-                        Some(
-                            futures::executor::block_on(writer_budget.acquire())
-                                .map_err(|e| Error::sql(e.to_string()))?,
-                        )
-                    } else {
-                        None
-                    };
-                    sink.write_fixed_bytes(&bytes, rows)?;
-                }
-                Ok::<_, Error>(sink)
-            })();
-            let _ = finished.send(result);
-        })
-        .map_err(|e| Error::output(e.to_string()))?;
     let guard = CancelOnDrop::default();
     let cancelled = guard.0.clone();
     let batch_rows = encoder.batch_rows();
@@ -92,29 +68,13 @@ pub(super) async fn write(
             }
         })
         .buffered(workers);
-    futures::pin_mut!(encoded);
-    let mut conversion_error = None;
-    while let Some(result) = encoded.next().await {
-        match result {
-            Ok(chunk) => {
-                if sender.send(chunk).await.is_err() {
-                    break;
-                }
-            }
-            Err(error) => {
-                conversion_error = Some(error);
-                break;
-            }
-        }
-    }
-    drop(sender);
-    // Await earlier writes before reporting a later conversion error. Nothing
-    // is published until this and the normal flush/fsync both succeed.
-    let sink = completion
-        .await
-        .map_err(|e| Error::output(e.to_string()))??;
-    if let Some(error) = conversion_error {
-        return Err(error);
-    }
-    Ok(sink)
+    super::writer::write_chunks(
+        sink,
+        encoded,
+        writer_budget,
+        compressed,
+        "dxtran-fixed-writer",
+        |sink, chunk: &Vec<u8>, rows| sink.write_fixed_bytes(chunk, rows),
+    )
+    .await
 }

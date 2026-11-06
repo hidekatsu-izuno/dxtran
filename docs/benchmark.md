@@ -60,6 +60,8 @@
 
 checkなし／入力・出力check 1件・3件、100列のParquetから2列を選ぶケース、100件・1,000件のprocess計画も測定に追加しました。[測定方法・2026-11-06の結果](../benchmarks/README.md#check少数列選択大量process)と[全72試行](../benchmarks/results/review-workloads-65536.json)を参照してください。Parquetの未使用列を含む全列検証は維持しています。
 
+その後の共通化・チェック処理・process計画の改善は、[変更前後の比較結果](../benchmarks/REVIEW_IMPROVEMENTS.md)に記録しています。連鎖するprocess、SQL関数、バイナリ・条件付きレイアウトも含め、主測定240試行と追加確認36試行を保存しました。
+
 ## 共通条件・検証
 
 - AMD Ryzen AI 9 465、20論理CPUが利用可能、WSL2（Linux 6.18.54.1）、ext2/ext3と報告される同一ファイルシステム上で入力・一時領域・出力を作成。

@@ -2,6 +2,7 @@ mod dependencies;
 mod names;
 mod order;
 mod sql;
+mod view;
 use dependencies::process_order;
 use order::{OrderPlanner, public_columns};
 use sql::prepare_sql;
@@ -16,7 +17,6 @@ use crate::{
 };
 use datafusion::{
     arrow::datatypes::SchemaRef,
-    catalog::view::ViewTable,
     logical_expr::{LogicalPlan, LogicalPlanBuilder},
     prelude::SessionContext,
 };
@@ -35,6 +35,7 @@ pub async fn plan(ctx: &SessionContext, job: &Job) -> Result<PlannedJob> {
     job.check_lua_permission()?;
     let mut inputs = vec![];
     let mut sets = BTreeMap::new();
+    let mut order = OrderPlanner::default();
     let conversion_budget = Arc::new(tokio::sync::Semaphore::new(
         ctx.copied_config().target_partitions(),
     ));
@@ -66,12 +67,8 @@ pub async fn plan(ctx: &SessionContext, job: &Job) -> Result<PlannedJob> {
         })?;
         let logical = frame.into_unoptimized_plan();
         names::validate_plan(&logical).map_err(|e| e.context(format!("process {}", p.id)))?;
-        OrderPlanner {
-            serial: 0,
-            sets: sets.clone(),
-        }
-        .rewrite(&logical)
-        .map_err(|e| {
+        order.sets.clone_from(&sets);
+        let ordered = order.rewrite(&logical).map_err(|e| {
             e.context(format!(
                 "process {} {}",
                 p.id,
@@ -81,7 +78,7 @@ pub async fn plan(ctx: &SessionContext, job: &Job) -> Result<PlannedJob> {
                     .unwrap_or_default()
             ))
         })?;
-        ctx.register_table(&p.id, Arc::new(ViewTable::new(logical, None)))?;
+        ctx.register_table(&p.id, Arc::new(view::ProcessView::new(logical, ordered)))?;
     }
     let mut outputs = vec![];
     for d in &job.output {
@@ -98,12 +95,8 @@ pub async fn plan(ctx: &SessionContext, job: &Job) -> Result<PlannedJob> {
         })?;
         let logical = frame.into_unoptimized_plan();
         names::validate_plan(&logical).map_err(|e| e.context(format!("output {}", d.id)))?;
-        let ordered = OrderPlanner {
-            serial: 0,
-            sets: sets.clone(),
-        }
-        .rewrite(&logical)
-        .map_err(|e| {
+        order.sets.clone_from(&sets);
+        let ordered = order.rewrite(&logical).map_err(|e| {
             e.context(format!(
                 "output {} {}",
                 d.id,
