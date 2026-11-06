@@ -72,6 +72,19 @@ enum Operation {
 
 async fn execute(cli: Cli, run_id: &str, exit_codes: &mut config::ExitCodes) -> Result<()> {
     let (path, resources, operation) = match cli.command {
+        Command::Doc { job } => {
+            let definition = config::load_for_documentation(&job, &cli.paths, exit_codes)?;
+            if !cli.params.is_empty() {
+                return Err(Error::config(
+                    "doc documents parameter declarations; --param is for check/explain/run",
+                ));
+            }
+            use std::io::Write;
+            return std::io::stdout()
+                .lock()
+                .write_all(crate::documentation::render(&definition, &job).as_bytes())
+                .map_err(|e| Error::output(e.to_string()));
+        }
         Command::Check {
             job,
             scan,
@@ -294,6 +307,7 @@ pub fn main_cli() -> i32 {
         }
     };
     let threads = match &cli.command {
+        Command::Doc { .. } => 1,
         Command::Check { resources, .. }
         | Command::Explain { resources, .. }
         | Command::Run { resources, .. } => resources.threads,

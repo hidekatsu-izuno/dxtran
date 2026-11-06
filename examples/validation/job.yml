@@ -1,26 +1,30 @@
+description: 地域別の売上を抽出し、件数・金額を検査して営業日付きCSVを出力します。
 params:
-  region: {type: string, default: "'east'"}
-  business_date: {type: date, default: "DATE '2026-11-06'"}
-  expected_count: {type: decimal, default: 3}
-  enabled: {type: boolean, default: true}
-  source_file: {type: string, default: "'sales'"}
+  region: {type: string, default: "'east'", description: 抽出対象の地域}
+  business_date: {type: date, default: "DATE '2026-11-06'", description: 出力に付与する営業日}
+  expected_count: {type: decimal, default: 3, description: 想定する入力件数}
+  enabled: {type: boolean, default: true, description: 抽出処理を有効にする}
+  source_file: {type: string, default: "'sales'", description: 拡張子を除いた入力ファイル名}
 
 input:
   - id: sales
+    description: 日本語ヘッダーを持つ売上明細
     format: csv
     path: "data/${source_file}.csv"
     encoding: utf-8
     fields:
-      - {name: customer_id, source_name: 顧客コード}
-      - {name: amount, source_name: 売上金額, type: decimal, precision: 8}
-      - {name: region, source_name: 地域}
+      - {name: customer_id, source_name: 顧客コード, description: 顧客を識別するコード}
+      - {name: amount, source_name: 売上金額, type: decimal, precision: 8, description: 売上金額（円）}
+      - {name: region, source_name: 地域, description: 売上の対象地域}
     after:
+      description: 全明細の件数と合計金額を照合
       when: COUNT(*) <> ${expected_count} OR SUM(amount) <> 60
       level: error
       message: 入力の件数または合計が想定と異なります。
 
 process:
   - id: selected
+    description: 指定地域に一致する有効な明細を抽出
     sql: SELECT customer_id, amount FROM sales WHERE ${enabled} AND region = ${region}
     before:
       from: sales
@@ -34,11 +38,16 @@ process:
 
 output:
   - id: result
+    description: 営業日を付与した地域別売上明細
     format: csv
     path: "out/records_${business_date}.csv"
     encoding: utf-8
     mode: overwrite
     sql: SELECT customer_id, amount, ${business_date} AS business_date FROM selected
+    fields:
+      - {name: customer_id, description: 顧客コード}
+      - {name: amount, description: 売上金額（円）}
+      - {name: business_date, description: 対象営業日}
     before:
       when: SUM(amount) <= 0
       level: error

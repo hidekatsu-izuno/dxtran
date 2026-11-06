@@ -1,6 +1,6 @@
 # dxtran 設計仕様書
 
-状態: 初期設計案 / 仕様版: 0.25 / 作成日: 2026-10-22 / 更新日: 2026-11-07
+状態: 初期設計案 / 仕様版: 0.28 / 作成日: 2026-10-22 / 更新日: 2026-11-07
 
 ## 1. 目的と設計上の前提
 
@@ -64,7 +64,7 @@ process: []
 output: []
 ```
 
-- import 展開後の最上位で使えるキーは `input`、`process`、`output`、任意の `params` / `lua` / `exit_codes` とする。入出力・process は配列で、`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。ジョブ直下の `lua` は共有変数と任意の開始・終了処理、`exit_codes` は14.1節の終了コード置換を指定するマップである。
+- import 展開後の最上位で使えるキーは `input`、`process`、`output`、任意の `description` / `params` / `lua` / `exit_codes` とする。入出力・process は配列で、`input` と `output` は必須でそれぞれ1件以上、`process` は省略可能で0件以上とする。`process` の省略は `process: []` と同じ扱いとし、明示した NULL や配列以外の値はエラーとする。ジョブ直下の `lua` は共有変数と任意の開始・終了処理、`exit_codes` は14.1節の終了コード置換を指定するマップである。
 - 各 output は `sql` を必須とする。`process` を省略した場合や `process: []` でも、`output.sql` に編集・結合・集計を書ける。単純な形式変換も `SELECT * FROM sales` 等の SQL で入力を指定する。
 - 項目定義は形式共通で input / output 直下の `fields` に置く。CSV の共通設定は `csv`、fixed のレコード設定は `fixed`、RDW の共通設定は `rdw` にまとめる。
 - 各定義に `id` を付ける。`input` と `process` の ID は同じ SQL テーブル名の名前空間を共有し、重複を禁止する。出力 ID は出力内で一意とする。
@@ -72,7 +72,7 @@ output: []
 - `dxt$` 始まりの名前は内部処理専用とする。ユーザー SQL の識別子・別名（CTE やテーブル別名、列の別名を含む）には、引用符と大文字・小文字にかかわらず使用できない。公開列名の規則を緩和するものではない。
 - 重複した YAML キー、複数 YAML ドキュメント、独自タグ、アンカー・エイリアスは設定エラーとする。値は YAML 1.2 に従って型を解釈する。`import` を展開してから、結果の不明なキーと型を検証する。
 - YAML は UTF-8 とし、YAML の相対パスはその値を書いた YAML ファイルの所在ディレクトリから解決する。import 元から引き継いだ値と利用側で上書きした値は、それぞれの記述元を基準にする。CLI で指定した入出力パスは起動時のカレントディレクトリを基準にする。
-- input / output の `path` は YAML では省略できる。CLI の `--input.<id>.path` / `--output.<id>.path` を指定した場合は、import 展開後の該当 ID の値より優先する。各パスは YAML または CLI のいずれかで指定する必要がある。
+- input / output の `path` は YAML では省略できる。CLI の `--input.<id>.path` / `--output.<id>.path` を指定した場合は、import 展開後の該当 ID の値より優先する。`check` / `explain` / `run` では各パスを YAML または CLI のいずれかで指定する必要がある。`doc` では未指定のまま文書化できる。
 - 初期版は1入力定義につき1ファイル、1出力定義につき1ファイル。glob、ディレクトリ入力、標準入出力は扱わない。
 - 入出力の `path` には4.2節の `${名前}` で業務パラメーターを展開できる。環境変数は展開しない。実行時のメモリ量等は CLI オプションで指定する。
 - サポートする設定文法は dxtran のバージョンと対応させる。破壊的変更は互換性変更として明示する。
@@ -150,6 +150,49 @@ dxt run job.yml -p business_date=2026-11-07 \
 ```
 
 CLIではシェルが `${...}` を先に展開しないよう引用する。対象は入出力の `path` とそのCLI上書きとし、SQLでも `${名前}` を使い、SQLでは型付きのバインド変数として扱う。import先、ジョブ直下の `lua.path`、ライブラリー、任意のoptionsやメッセージにはパス展開を適用しない。展開したパスに対して既存の衝突検査・公開規則を適用し、展開後ハッシュにも実際のパスを反映する。
+
+### 4.3 description とMarkdownドキュメント
+
+ジョブ直下、各input / process / output、fields（FILLERを含む）、bitsの子項目、paramsの各宣言、check / before / afterの各ルールに、任意の文字列 `description` を指定できる。CSV / fixed / lines / rdw / parquet / luaの設定ブロック、ジョブLuaの設定にも指定できる。自由形式の `lua.options` / `lua.variables` 等は従来のデータとして扱う。
+
+```yaml
+description: |
+  指定地域の売上明細を集計します。
+  対象地域は業務パラメーターで指定します。
+params:
+  region: {type: string, description: 抽出対象地域}
+input:
+  - id: sales
+    description: 売上明細
+    format: csv
+    path: data/sales.csv
+    encoding: utf-8
+    fields:
+      - {name: amount, type: decimal, description: 売上金額（円）}
+      - {name: region, description: 売上の対象地域}
+output:
+  - id: result
+    description: 金額合計
+    format: csv
+    path: out/total.csv
+    encoding: utf-8
+    sql: SELECT SUM(amount) AS total FROM sales WHERE region = ${region}
+    fields:
+      - {name: total, description: 売上金額の合計（円）}
+```
+
+`description` は複数行も指定でき、importで共有・上書きできる。文字列以外は設定エラーとする。処理条件や変換結果には影響させず、`${...}` 等も説明文のまま保持する。ジョブやデータセットの説明はMarkdownの本文、項目・パラメーター・チェックの説明は一覧表へ出力する。表の区切り文字・改行等は表を壊さないよう整形する。項目の補助設定はフィールド一覧の `Additional` 列に `key: value` でまとめ、複数の設定はセル内で改行する。配列・オブジェクトはJSON表記の値として掲載する。
+
+```sh
+dxt doc job.yml
+dxt doc job.yml > job.md
+```
+
+`doc` はimport展開後のジョブ概要、パラメーターの型・必須性・SQL既定値、入出力の設定・項目・ビット、processと出力SQL、行・集計チェック、Lua設定、終了コードをMarkdownで標準出力する。見出し・表のヘッダー・定型文は英語とし、`description`・SQL・メッセージ等の設定値は翻訳せず原文を保持する。出力順はinput / process / outputの定義順とし、項目やチェックも配列順とする。明示されていない位置・長さ・NULL許容等の設定は「—」で示し、SQL結果の型を推測して補完しない。
+
+データファイルを読み込まず、SQLの実行・計画生成やLuaのロードを行わない。Luaのジョブにも `--allow-lua` は不要。必須パラメーターの実値、未指定の入出力パスも不要で、パスがなければ「CLIで指定」と記録する。SQL・パステンプレートは元の表記を掲載する。`--input.<id>.path` / `--output.<id>.path` による文書上の上書きはできるが、`--param` は受け付けない。
+
+YAML・import・設定キー・基本型の読み込み検証は共通とする。SQLの参照・型や物理レイアウトの妥当性は `check` で検証する。Parquetの実ファイルやSQLから列を推論せず、定義に項目がなければファイル／SQLのスキーマを使用する旨を掲載する。Markdown以外の実行ログは標準エラーへ出し、`exit_codes` による終了コード置換も共通で適用する。
 
 ## 5. 設定の全体例
 
@@ -555,7 +598,7 @@ process:
 
 ### 6.9 LuaJIT 外部テーブル
 
-Lua の実行は既定で拒否する。Lua 入出力または最上位の `lua` を含むジョブは、CLI の `--allow-lua` による明示許可を必要とする。YAML では自己許可できない。これは信頼済みコードをプロセスと同じ権限で実行するための許可であり、サンドボックスではない。check / explain も許可時にはトップレベルを評価する。[セキュリティ境界と隔離の設計](LUA_SECURITY.md)を参照する。
+Lua の実行は既定で拒否する。Lua 入出力または最上位の `lua` を含むジョブの実行・検証には、CLI の `--allow-lua` による明示許可を必要とする。文書化だけの `doc` はLuaをロードしないため許可を不要とする。YAML では自己許可できない。これは信頼済みコードをプロセスと同じ権限で実行するための許可であり、サンドボックスではない。check / explain も許可時にはトップレベルを評価する。[セキュリティ境界と隔離の設計](LUA_SECURITY.md)を参照する。
 
 メイン・フック・補助モジュールの標準ローダーは1ファイル1 MiBまでの Lua テキストだけを受け付ける。補助モジュールはスクリプトのディレクトリ内に限定し、外部 symlink・環境変数経由の暗黙のモジュール検索を拒否する。FFI による直接のロード・プロセス操作・メモリ確保は、信頼済みモードの権限に含まれる。
 
@@ -1649,6 +1692,9 @@ dxt check job.yml
 # 追加で全入力を最後まで読み、レコードと型を検証する
 dxt check job.yml --scan
 
+# import展開後の定義をMarkdownで出力する
+dxt doc job.yml > job.md
+
 # 最終出力ごとの論理・物理計画を表示する。データは実行しない
 dxt explain job.yml
 
@@ -1685,7 +1731,7 @@ dxt run job.yml -p branch=tokyo --param business_date=2026-11-06
 
 入力データの生値は既定のエラーログには含めない。SQL 演算の失敗を元入力の行まで逆追跡できるとは保証しない。
 
-終了コードは `0`: 成功、`2`: CLI / 設定 / レイアウト、`3`: 入力データ / 読み取り / 入力 check の異常終了、`4`: SQL 計画 / 計算 / リソース不足、`5`: 出力書き込み / 公開失敗 / 出力 check の異常終了とする。標準出力は `check` / `explain` の結果と `level: info` のメッセージ、標準エラーは実行ログと `level: warn` / `error` のメッセージに使う。
+終了コードは `0`: 成功、`2`: CLI / 設定 / レイアウト、`3`: 入力データ / 読み取り / 入力 check の異常終了、`4`: SQL 計画 / 計算 / リソース不足、`5`: 出力書き込み / 公開失敗 / 出力 check の異常終了とする。標準出力は `doc` のMarkdown、`check` / `explain` の結果と `level: info` のメッセージ、標準エラーは実行ログと `level: warn` / `error` のメッセージに使う。
 
 実行ログにはバージョン、ジョブと import 先のパス・ハッシュ、展開結果のハッシュ、開始・終了時刻、出力ごとの行数・バイト数・所要時間を記録する。読み取り数を記録する場合はスキャン単位で数え、複数出力による再走査を入力の実件数と混同しない。
 

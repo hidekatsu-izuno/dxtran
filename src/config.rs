@@ -275,6 +275,7 @@ pub enum Format {
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Lua {
+    pub description: Option<String>,
     #[serde(default)]
     pub libraries: BTreeMap<String, String>,
     #[serde(default)]
@@ -289,6 +290,7 @@ pub struct Lua {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobLua {
+    pub description: Option<String>,
     pub path: Option<PathBuf>,
     #[serde(default)]
     pub variables: BTreeMap<String, Value>,
@@ -308,6 +310,7 @@ pub enum Compression {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Parquet {
+    pub description: Option<String>,
     #[serde(default = "parquet_compression")]
     pub compression: String,
     #[serde(default = "parquet_row_group_size")]
@@ -322,6 +325,7 @@ fn parquet_row_group_size() -> usize {
 impl Default for Parquet {
     fn default() -> Self {
         Self {
+            description: None,
             compression: parquet_compression(),
             row_group_size: parquet_row_group_size(),
         }
@@ -330,6 +334,7 @@ impl Default for Parquet {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Csv {
+    pub description: Option<String>,
     #[serde(default = "yes")]
     pub header: bool,
     #[serde(default = "comma")]
@@ -353,6 +358,7 @@ fn quote() -> String {
 impl Default for Csv {
     fn default() -> Self {
         Self {
+            description: None,
             header: true,
             delimiter: comma(),
             quote: quote(),
@@ -364,12 +370,14 @@ impl Default for Csv {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixed {
+    pub description: Option<String>,
     pub record_separator: String,
     pub record_length: Option<usize>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Lines {
+    pub description: Option<String>,
     pub line_ending: String,
     pub record_length: Option<usize>,
     pub trim_trailing_spaces: bool,
@@ -377,6 +385,7 @@ pub struct Lines {
 impl Default for Lines {
     fn default() -> Self {
         Self {
+            description: None,
             line_ending: "lf".into(),
             record_length: None,
             trim_trailing_spaces: true,
@@ -386,6 +395,7 @@ impl Default for Lines {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rdw {
+    pub description: Option<String>,
     #[serde(default)]
     pub bdw: bool,
     #[serde(default)]
@@ -401,6 +411,7 @@ fn rdw_max() -> usize {
 impl Default for Rdw {
     fn default() -> Self {
         Self {
+            description: None,
             bdw: false,
             spanned: false,
             max_record_length: rdw_max(),
@@ -447,12 +458,14 @@ pub enum Length {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Bit {
+    pub description: Option<String>,
     pub name: String,
     pub bit: usize,
 }
 #[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Field {
+    pub description: Option<String>,
     pub name: Option<String>,
     pub source_name: Option<String>,
     pub when: Option<String>,
@@ -515,6 +528,7 @@ fn deserialize_trim<'de, D: serde::Deserializer<'de>>(
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
+    pub description: Option<String>,
     pub from: Option<String>,
     pub when: String,
     pub level: CheckLevel,
@@ -548,8 +562,10 @@ fn checks<'de, D: serde::Deserializer<'de>>(
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dataset {
+    pub description: Option<String>,
     pub id: String,
     pub format: Format,
+    #[serde(default)]
     pub path: PathBuf,
     #[serde(skip)]
     pub(crate) path_template: Option<PathTemplate>,
@@ -602,6 +618,7 @@ impl Dataset {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Process {
+    pub description: Option<String>,
     pub id: String,
     pub sql: String,
     #[serde(default, deserialize_with = "checks")]
@@ -613,6 +630,8 @@ pub struct Process {
 }
 #[derive(Clone, Debug)]
 pub struct Job {
+    pub description: Option<String>,
+    pub(crate) definition: Value,
     pub exit_codes: ExitCodes,
     pub params: BTreeMap<String, Param>,
     pub(crate) params_bound: bool,
@@ -628,6 +647,7 @@ pub struct Job {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Param {
+    pub description: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<ParamType>,
     #[serde(default, deserialize_with = "sql_default")]
@@ -793,21 +813,22 @@ pub fn identifier(name: &str) -> bool {
     matches!(chars.next(), Some(b'a'..=b'z'))
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
 }
-fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
+fn datasets(node: &Node, output: bool, documentation: bool) -> Result<Vec<Dataset>> {
     let Kind::Sequence(seq) = &node.kind else {
         return Err(Error::config("expected array").context(&node.origin));
     };
     seq.iter()
         .map(|n| {
-            let path = n.get("path").ok_or_else(|| {
+            let path = n.get("path");
+            if path.is_none() && !documentation {
                 let section = if output { "output" } else { "input" };
                 let id = n.get("id").map(Node::value).unwrap_or(Value::Null);
                 let id = id.as_str().unwrap_or("<id>");
-                Error::config(format!(
+                return Err(Error::config(format!(
                     "{section}.{id}.path is required in YAML or via --{section}.{id}.path"
                 ))
-                .context(&n.origin)
-            })?;
+                .context(&n.origin));
+            }
             let mut d: Dataset = n.decode()?;
             d.origin = Some(n.origin.clone());
             d.sql_origin = n.get("sql").map(|n| n.origin.clone());
@@ -820,25 +841,27 @@ fn datasets(node: &Node, output: bool) -> Result<Vec<Dataset>> {
                         .context(&n.origin),
                 );
             }
-            if d.path.as_os_str().is_empty() {
-                return Err(Error::config("path must not be empty").context(&path.origin));
+            if let Some(path) = path {
+                if d.path.as_os_str().is_empty() {
+                    return Err(Error::config("path must not be empty").context(&path.origin));
+                }
+                // Inspect the original CLI value so ${...} in the CWD remains literal.
+                let raw_path = path.cli_path.as_ref().unwrap_or(&d.path);
+                let templated = PathTemplate::applies(raw_path);
+                let base = if templated && path.origin.file == Path::new("<command line>") {
+                    std::env::current_dir().map_err(|e| Error::config(e.to_string()))?
+                } else {
+                    path.origin.file.parent().unwrap().to_owned()
+                };
+                if templated {
+                    d.path_template = Some(PathTemplate {
+                        raw: raw_path.to_str().unwrap().to_owned(),
+                        base: base.clone(),
+                        origin: path.origin.clone(),
+                    });
+                }
+                d.path = base.join(&d.path);
             }
-            // Inspect the original CLI value so ${...} in the CWD remains literal.
-            let raw_path = path.cli_path.as_ref().unwrap_or(&d.path);
-            let templated = PathTemplate::applies(raw_path);
-            let base = if templated && path.origin.file == Path::new("<command line>") {
-                std::env::current_dir().map_err(|e| Error::config(e.to_string()))?
-            } else {
-                path.origin.file.parent().unwrap().to_owned()
-            };
-            if templated {
-                d.path_template = Some(PathTemplate {
-                    raw: raw_path.to_str().unwrap().to_owned(),
-                    base: base.clone(),
-                    origin: path.origin.clone(),
-                });
-            }
-            d.path = base.join(&d.path);
             if let Some(lua) = &mut d.lua {
                 let raw = n.get("lua").unwrap();
                 lua.base_dir = raw
@@ -979,6 +1002,21 @@ pub(crate) fn load_with_paths_and_exit_codes(
     paths: &PathOverrides,
     exit_codes: &mut ExitCodes,
 ) -> Result<Job> {
+    load_job(path, paths, exit_codes, false)
+}
+pub(crate) fn load_for_documentation(
+    path: &Path,
+    paths: &PathOverrides,
+    exit_codes: &mut ExitCodes,
+) -> Result<Job> {
+    load_job(path, paths, exit_codes, true)
+}
+fn load_job(
+    path: &Path,
+    paths: &PathOverrides,
+    exit_codes: &mut ExitCodes,
+    documentation: bool,
+) -> Result<Job> {
     *exit_codes = ExitCodes::default();
     let mut loader = Loader::default();
     let mut root = loader.file(path)?;
@@ -1013,12 +1051,12 @@ pub(crate) fn load_with_paths_and_exit_codes(
         || m.keys().any(|k| {
             !matches!(
                 k.as_str(),
-                "exit_codes" | "params" | "lua" | "input" | "process" | "output"
+                "description" | "exit_codes" | "params" | "lua" | "input" | "process" | "output"
             )
         })
     {
         return Err(Error::config(
-            "job requires input and output; exit_codes, params, lua and process are optional and other keys are forbidden",
+            "job requires input and output; description, exit_codes, params, lua and process are optional and other keys are forbidden",
         )
         .context(&root.origin));
     }
@@ -1049,8 +1087,8 @@ pub(crate) fn load_with_paths_and_exit_codes(
         }
     }
     let lua_runtime = crate::lua::Runtime::new(lua.as_ref());
-    let mut input = datasets(&m["input"], false)?;
-    let mut output = datasets(&m["output"], true)?;
+    let mut input = datasets(&m["input"], false, documentation)?;
+    let mut output = datasets(&m["output"], true, documentation)?;
     for dataset in input.iter_mut().chain(&mut output) {
         if dataset.format == Format::Lua
             && let Some(state) = lua_runtime.state()
@@ -1095,7 +1133,12 @@ pub(crate) fn load_with_paths_and_exit_codes(
             return Err(Error::config(format!("duplicate output id '{}'", d.id)));
         }
     }
+    let description = m.get("description").map(Node::decode).transpose()?;
+    let definition = root.value();
+    let expanded_hash = hex::encode(Sha256::digest(serde_json::to_vec(&definition).unwrap()));
     Ok(Job {
+        description,
+        definition,
         exit_codes: exit_codes.clone(),
         params,
         params_bound: false,
@@ -1105,7 +1148,7 @@ pub(crate) fn load_with_paths_and_exit_codes(
         process,
         output,
         hashes: loader.hashes,
-        expanded_hash: hex::encode(Sha256::digest(serde_json::to_vec(&root.value()).unwrap())),
+        expanded_hash,
     })
 }
 

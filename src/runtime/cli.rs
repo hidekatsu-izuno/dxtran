@@ -32,6 +32,8 @@ pub struct Cli {
 const PATH_HELP: &str = "File paths (override YAML; relative to the current directory):\n  --input.<id>.path <PATH>\n  --output.<id>.path <PATH>\nExample: --input.sales.path=sales.csv";
 #[derive(Subcommand)]
 pub(super) enum Command {
+    #[command(about = "Print the job definition as Markdown without reading data or executing SQL/Lua", after_help = PATH_HELP)]
+    Doc { job: PathBuf },
     #[command(after_help = PATH_HELP)]
     Check {
         job: PathBuf,

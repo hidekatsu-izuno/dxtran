@@ -36,20 +36,22 @@ pub(crate) fn layout(d: &Dataset) -> Result<RecordLayout> {
     let mut fields = Vec::new();
     for spec in &d.fields {
         let mut extra = spec.clone();
+        extra.description = None;
         extra.name = None;
         extra.kind = None;
         extra.nullable = None;
         extra.origin = None;
         extra.origins.clear();
         if extra != Field::default() {
-            return Err(
-                Error::config("lua fields accept only name, type and nullable").context(
-                    spec.origin
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_default(),
-                ),
-            );
+            return Err(Error::config(
+                "lua fields accept only description, name, type and nullable",
+            )
+            .context(
+                spec.origin
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+            ));
         }
         let name = spec
             .name

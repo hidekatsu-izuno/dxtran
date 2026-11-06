@@ -11,6 +11,24 @@ cargo run -- run examples/basic/job.yml --threads 4 --memory-limit 512MiB
 
 サンプルの結果は `examples/basic/totals.csv` に出力されます。相対パスは、その値を記述した YAML ファイルがあるディレクトリから解決します。既存出力を置き換えるには出力定義に `mode: overwrite` を指定します。
 
+ジョブ全体、入出力・process、項目・ビット、パラメーター、チェック等に `description` で説明を記述できます。
+
+```yaml
+description: 地域別の売上を集計するジョブ
+input:
+  - id: sales
+    description: 売上明細
+    # format・path・encoding等は通常どおり指定
+    fields:
+      - {name: amount, type: decimal, description: 売上金額（円）}
+```
+
+`dxt doc job.yml` はimport展開後の説明・項目一覧・SQL・チェック・設定をMarkdownで標準出力します。見出し・表・定型文は英語で、`description`・SQL・メッセージ等の設定値は原文を保持します。データファイルや必須パラメーターの実値がなくても生成でき、SQLやLuaは実行しません。定義にないParquetの列やSQL結果の型は推論しません。[説明付きの設定例](examples/validation/job.yml)と[出力仕様](docs/SPEC.md#43-description-とmarkdownドキュメント)を参照してください。
+
+```sh
+dxt doc examples/validation/job.yml > job.md
+```
+
 業務パラメーターはジョブ直下の `params` に宣言し、`--param X=Y` / `-p X=Y` で渡します。`type` に `string`・`decimal`・`date`・`time`・`timestamp`・`boolean` を指定できます。CLI値はテキストとして渡し、SQL式の `default` またはCLI値を宣言型へ変換します。変換できない値は計画前に設定エラーになります。`decimal` の精度・小数桁は定数の値から自動で決まり、`precision` / `scale` は指定しません。型を省略した場合は従来どおり、CLI値は文字列、既定値はSQL式の型を使います。`default` がない宣言は必須で、未宣言名・重複指定もエラーになります。SQLや各 `when` から `${X}` をバインド変数として参照できます。[詳細](docs/SPEC.md#41-業務パラメーター)を参照してください。
 
 ```yaml

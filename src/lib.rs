@@ -4,6 +4,7 @@ mod check;
 mod compression;
 pub mod config;
 mod datetime;
+pub mod documentation;
 pub mod encoding;
 pub mod error;
 pub mod field;

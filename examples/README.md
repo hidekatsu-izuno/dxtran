@@ -1,5 +1,13 @@
 # 入出力の組み合わせサンプル
 
+各YAMLの生成ドキュメントは同じフォルダの同名 `.md` にあります。[ドキュメント一覧](DOCUMENTS.md)から参照できます。ジョブは `dxt doc` の出力、import用の部品定義は内容と参照元を掲載しています。生成する見出し・表・定型文は英語で、YAMLの説明文や設定値は原文を保持します。
+
+```sh
+cargo build --locked --bin dxt
+python3 examples/generate_docs.py
+python3 examples/generate_docs.py --check
+```
+
 固定長・行順編成・CSV・RDW・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。正常系と異常系のジョブをまとめて検証できます。加えて、[SQLite の外部テーブル](sqlite/README.md)を LuaJIT のプラグインで読み込む例があります。
 
 | ディレクトリ | 入力 → 出力 | 確認する内容 |
@@ -151,6 +159,7 @@ target/debug/dxt run examples/checks/output_abend.yml
 
 ```sh
 mkdir -p examples/validation/out
+target/debug/dxt doc examples/validation/job.yml > /tmp/validation.md
 target/debug/dxt check examples/validation/job.yml --scan
 target/debug/dxt run examples/validation/job.yml
 cmp examples/validation/expected/records.csv examples/validation/out/records_2026-11-06.csv

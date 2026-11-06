@@ -187,6 +187,7 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
     }
     if kind == FieldType::Filler {
         let mut allowed = spec.clone();
+        allowed.description = None;
         allowed.offset = None;
         allowed.length = None;
         allowed.fill_byte = None;
@@ -198,7 +199,7 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
             || allowed != Field::default()
         {
             return Err(bad(
-                "FILLER accepts only offset, length, fill_byte and when",
+                "FILLER accepts only description, offset, length, fill_byte and when",
             ));
         }
     }
