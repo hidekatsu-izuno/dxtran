@@ -5,25 +5,54 @@ use std::{fs, process::Command};
 async fn process_catalog_preserves_named_references_instead_of_inlining_the_chain() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("in.csv"), "n\n1\n").unwrap();
-    let processes: Vec<_> = (0..64).map(|i| json!({"id":format!("p{i}"),
+    let processes: Vec<_> = (0..1000).map(|i| json!({"id":format!("p{i}"),
         "sql":format!("SELECT * FROM {}", if i == 0 { "data".into() } else { format!("p{}", i-1) })})).collect();
     let path = dir.path().join("job.json");
     fs::write(&path, json!({
         "input":[{"id":"data","path":"in.csv","format":"csv","encoding":"utf-8","fields":[{"name":"n"}]}],
         "process":processes,
-        "output":[{"id":"result","path":"out.csv","format":"csv","encoding":"utf-8","sql":"SELECT * FROM p63"}]
+        "output":[{"id":"result","path":"out.csv","format":"csv","encoding":"utf-8","sql":"SELECT * FROM p999"}]
     }).to_string()).unwrap();
     let job = dxtran::config::load(&path).unwrap();
     let context = datafusion::prelude::SessionContext::new();
     dxtran::planner::plan(&context, &job).await.unwrap();
     let plan = context
-        .sql("SELECT * FROM p63")
+        .sql("SELECT * FROM p999")
         .await
         .unwrap()
         .into_unoptimized_plan();
     let display = plan.display_indent().to_string();
-    assert!(display.contains("TableScan: p63"), "{display}");
+    assert!(display.contains("TableScan: p999"), "{display}");
     assert!(!display.contains("TableScan: data"), "{display}");
+
+    let batches = context
+        .sql("SELECT n FROM p999 WHERE n = '1' LIMIT 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].num_rows(), 1);
+    assert_eq!(batches[0].num_columns(), 1);
+    assert_eq!(
+        datafusion::common::ScalarValue::try_from_array(batches[0].column(0), 0)
+            .unwrap()
+            .to_string(),
+        "1"
+    );
+
+    // Keep the final view alive after its catalog so cleanup must release every
+    // dependency. A small stack catches recursion even on platforms with larger defaults.
+    let provider = context.table_provider("p999").await.unwrap();
+    drop(plan);
+    drop(context);
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || drop(provider))
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]

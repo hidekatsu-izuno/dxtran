@@ -172,7 +172,7 @@ pub async fn plan(ctx: &SessionContext, job: &Job) -> Result<PlannedJob> {
                 after,
             });
         } else {
-            ctx.register_table(&p.id, Arc::new(view::ProcessView::new(logical, ordered)))?;
+            ctx.register_table(&p.id, Arc::new(view::ProcessView::new(ordered)?))?;
         }
     }
     let mut outputs = vec![];
