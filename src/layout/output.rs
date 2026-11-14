@@ -52,36 +52,7 @@ impl RecordLayout {
                     continue;
                 }
                 let t = col.data_type();
-                use FieldType::*;
-                let compatible = match f.kind {
-                    String => {
-                        matches!(t, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
-                    }
-                    Decimal | Zoned | Lzoned | Tzoned | Uzoned | Packed | Upacked | Npacked => {
-                        matches!(t, DataType::Decimal128(_, _))
-                    }
-                    Boolean | Bits => *t == DataType::Boolean,
-                    Date => *t == DataType::Date32,
-                    Time => matches!(t, DataType::Time64(_)),
-                    Timestamp => {
-                        matches!(t,DataType::Timestamp(_,z) if z.is_some()==matches!(f.data_type(),DataType::Timestamp(_,Some(_))))
-                    }
-                    Binary | Bstring => matches!(
-                        t,
-                        DataType::Binary
-                            | DataType::BinaryView
-                            | DataType::LargeBinary
-                            | DataType::FixedSizeBinary(_)
-                    ),
-                    IntLe | IntBe | UintLe | UintBe if f.scaled_integer() => {
-                        matches!(t, DataType::Decimal128(_, _))
-                    }
-                    IntLe | IntBe | UintLe | UintBe => t.is_integer(),
-                    FloatLe | FloatBe | HfloatLe | HfloatBe => {
-                        matches!(t, DataType::Float32 | DataType::Float64)
-                    }
-                    Filler => true,
-                };
+                let compatible = compatible(f, t);
                 if !compatible {
                     return Err(Error::config(format!(
                         "output column '{name}' type {t:?} is incompatible with {:?}; use SQL CAST",
@@ -111,4 +82,37 @@ fn csv_type(t: &DataType) -> bool {
             | DataType::Float32
             | DataType::Float64
     ) || t.is_integer()
+}
+
+pub(super) fn compatible(f: &CompiledField, t: &DataType) -> bool {
+    use FieldType::*;
+    match f.kind {
+        String => {
+            matches!(t, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+        }
+        Decimal | Zoned | Lzoned | Tzoned | Uzoned | Packed | Upacked | Npacked => {
+            matches!(t, DataType::Decimal128(_, _))
+        }
+        Boolean | Bits => *t == DataType::Boolean,
+        Date => *t == DataType::Date32,
+        Time => matches!(t, DataType::Time64(_)),
+        Timestamp => {
+            matches!(t,DataType::Timestamp(_,z) if z.is_some()==matches!(f.data_type(),DataType::Timestamp(_,Some(_))))
+        }
+        Binary | Bstring => matches!(
+            t,
+            DataType::Binary
+                | DataType::BinaryView
+                | DataType::LargeBinary
+                | DataType::FixedSizeBinary(_)
+        ),
+        IntLe | IntBe | UintLe | UintBe if f.scaled_integer() => {
+            matches!(t, DataType::Decimal128(_, _))
+        }
+        IntLe | IntBe | UintLe | UintBe => t.is_integer(),
+        FloatLe | FloatBe | HfloatLe | HfloatBe => {
+            matches!(t, DataType::Float32 | DataType::Float64)
+        }
+        Filler => true,
+    }
 }

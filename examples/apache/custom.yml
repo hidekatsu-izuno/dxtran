@@ -1,0 +1,30 @@
+description: Apache のカスタム LogFormat を指定し、仮想ホスト・リクエストの各要素・処理時間を取り込む
+input:
+  - id: access
+    format: apache
+    path: data/custom.log
+    encoding: utf-8
+    apache:
+      format: custom
+      log_format: '%v:%p %a [%{%Y-%m-%dT%H:%M:%S%z}t] "%m %U%q %H" %>s %b %D "%{User-Agent}i" %%'
+      description: 変換指定子の出現順に12列。%%はリテラルで列を作らない
+    fields:
+      - {name: vhost}
+      - {name: port, type: decimal, precision: 5}
+      - {name: host}
+      - {name: logged_at}
+      - {name: method}
+      - {name: path}
+      - {name: query_string, description: クエリーがない場合は空文字}
+      - {name: protocol}
+      - {name: status, type: decimal, precision: 3}
+      - {name: bytes, type: decimal, precision: 12, nullable: true}
+      - {name: duration_us, type: decimal, precision: 12}
+      - {name: user_agent, nullable: true}
+output:
+  - id: records
+    format: csv
+    path: out/custom.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: SELECT * FROM access

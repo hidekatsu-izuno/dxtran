@@ -1,0 +1,45 @@
+description: 配列を含む固定長・RDW・Parquetの読み戻しを照合する
+input:
+  - id: fixed_data
+    format: fixed
+    path: out/records.dat
+    encoding: utf-8
+    fixed: {record_length: 25, record_separator: lf}
+    fields: {import: fields.yml}
+  - id: rdw_data
+    format: rdw
+    path: out/records.rdw
+    encoding: utf-8
+    fields: {import: fields.yml}
+  - id: parquet_data
+    format: parquet
+    path: out/records.parquet
+output:
+  - id: fixed_result
+    format: csv
+    path: out/fixed_readback.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: |
+      WITH data AS (SELECT * FROM fixed_data)
+      SELECT customer_id, item_count, array_length(items) AS actual_count,
+             monthly_amounts[2] AS second_month, items[1]['code'] AS first_code, trailer
+      FROM data
+  - id: rdw_result
+    format: csv
+    path: out/rdw_readback.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: |
+      SELECT customer_id, item_count, array_length(items) AS actual_count,
+             monthly_amounts[2] AS second_month, items[1]['code'] AS first_code, trailer
+      FROM rdw_data
+  - id: parquet_result
+    format: csv
+    path: out/parquet_readback.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: |
+      SELECT customer_id, item_count, array_length(items) AS actual_count,
+             monthly_amounts[2] AS second_month, items[1]['code'] AS first_code, trailer
+      FROM parquet_data

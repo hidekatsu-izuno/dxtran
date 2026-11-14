@@ -1,6 +1,7 @@
 mod conditional;
 mod csv;
 mod output;
+mod repeat;
 use crate::{
     config::{Dataset, Format},
     encoding::TextEncoding,
@@ -23,6 +24,7 @@ pub struct RecordLayout {
     pub encoding: TextEncoding,
     pub(crate) lines: Option<crate::framing::lines::LineFraming>,
     pub(crate) conditional: Option<conditional::ConditionalLayout>,
+    pub(crate) repeated: Option<repeat::RepeatLayout>,
     pub(crate) checks: crate::check::Checks,
 }
 impl RecordLayout {
@@ -38,6 +40,31 @@ impl RecordLayout {
     }
     fn compile(d: &Dataset, result: Option<SchemaRef>) -> Result<Self> {
         let output = result.is_some();
+        if d.apache.is_some() && d.format != Format::Apache {
+            return Err(Error::config("apache block requires format: apache").context(&d.id));
+        }
+        if d.format == Format::Apache {
+            if output {
+                return Err(Error::config("apache is an input-only format"));
+            }
+            let options = d.apache.clone().unwrap_or_default();
+            let count = options.compile()?.columns();
+            if d.fields.len() != count {
+                return Err(Error::config(format!(
+                    "Apache {} input.fields must contain exactly {count} fields in log order",
+                    options.format
+                )));
+            }
+        }
+        let repeated = d
+            .fields
+            .iter()
+            .any(|f| f.repeat.is_some() || f.fields.is_some());
+        if repeated && !matches!(d.format, Format::Fixed | Format::Lines | Format::Rdw) {
+            return Err(Error::config(
+                "repeat and nested fields require fixed/lines/rdw",
+            ));
+        }
         let mut external_names = BTreeSet::new();
         for field in &d.fields {
             if field.source_name.is_some()
@@ -75,7 +102,7 @@ impl RecordLayout {
         if d.format == Format::Parquet {
             if d.compression.is_some() {
                 return Err(Error::config(
-                    "top-level compression is for csv/fixed/lines/rdw; use parquet.compression for Parquet output",
+                    "top-level compression is for csv/apache/fixed/lines/rdw; use parquet.compression for Parquet output",
                 ));
             }
             return crate::parquet_io::layout(d, result);
@@ -137,6 +164,9 @@ impl RecordLayout {
         } else {
             vec![]
         };
+        if repeated {
+            return repeat::compile(d, result, encoding, separator, max);
+        }
         if d.fields.iter().any(|f| f.when.is_some()) {
             return conditional::compile(d, result, encoding, separator, max);
         }
@@ -166,7 +196,7 @@ impl RecordLayout {
                 offset,
                 encoding,
             )?;
-            if d.format != Format::Csv {
+            if !matches!(d.format, Format::Csv | Format::Apache) {
                 if let Some(n) = f.length {
                     end = offset
                         .checked_add(n)
@@ -232,6 +262,7 @@ impl RecordLayout {
             encoding,
             lines,
             conditional: None,
+            repeated: None,
             checks: Default::default(),
         };
         if let Some(result) = result {

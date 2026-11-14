@@ -1,0 +1,42 @@
+description: Apache Combined Log Format のアクセスログをCSVに変換し、ステータス別に集計する
+input:
+  - id: access
+    format: apache
+    path: data/access.log
+    encoding: utf-8
+    apache:
+      format: combined
+      description: Common Log Format に Referer と User-Agent を加えた9項目
+    fields:
+      - {name: host}
+      - {name: ident, nullable: true}
+      - {name: remote_user, nullable: true}
+      - {name: logged_at, description: 角括弧を外した日時。SQLでtimestampへ変換する}
+      - {name: request, nullable: true}
+      - {name: status, type: decimal, precision: 3}
+      - {name: bytes, type: decimal, precision: 12, nullable: true}
+      - {name: referer, nullable: true}
+      - {name: user_agent, nullable: true}
+output:
+  - id: records
+    format: csv
+    path: out/records.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: |
+      SELECT host, remote_user,
+             to_char(
+               from_unixtime(to_unixtime(logged_at, '%d/%b/%Y:%H:%M:%S %z')),
+               '%Y-%m-%dT%H:%M:%SZ') AS received_at,
+             request, status, bytes, referer, user_agent
+      FROM access
+  - id: summary
+    format: csv
+    path: out/summary.csv
+    encoding: utf-8
+    mode: overwrite
+    sql: |
+      SELECT status, COUNT(*) AS requests, SUM(bytes) AS total_bytes
+      FROM access
+      GROUP BY status
+      ORDER BY status

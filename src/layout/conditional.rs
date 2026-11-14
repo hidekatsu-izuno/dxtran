@@ -274,6 +274,7 @@ pub(super) fn compile(
             input_columns,
             nulls,
         }),
+        repeated: None,
         checks: Default::default(),
     };
     if let Some(schema) = result {
@@ -389,6 +390,12 @@ impl RecordLayout {
         values: &mut impl ValueSink,
         scratch: &mut DecodeScratch,
     ) -> Result<()> {
+        if let Some(repeated) = &self.repeated {
+            for value in repeated.decode(body)? {
+                values.scalar(value)?;
+            }
+            return Ok(());
+        }
         let Some(conditional) = &self.conditional else {
             for field in &self.fields {
                 decode_field(field, body, values)?;

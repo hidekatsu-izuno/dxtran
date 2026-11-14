@@ -266,6 +266,7 @@ impl Loader {
 #[serde(rename_all = "lowercase")]
 pub enum Format {
     Csv,
+    Apache,
     Fixed,
     Lines,
     Rdw,
@@ -368,6 +369,22 @@ impl Default for Csv {
     }
 }
 #[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Apache {
+    pub description: Option<String>,
+    pub format: String,
+    pub log_format: Option<String>,
+}
+impl Default for Apache {
+    fn default() -> Self {
+        Self {
+            description: None,
+            format: "combined".into(),
+            log_format: None,
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixed {
     pub description: Option<String>,
@@ -462,6 +479,22 @@ pub struct Bit {
     pub name: String,
     pub bit: usize,
 }
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Repeat {
+    Fixed(usize),
+    Variable(VariableRepeat),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VariableRepeat {
+    pub count_field: String,
+    #[serde(default)]
+    pub min: usize,
+    pub max: usize,
+}
+
 #[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Field {
@@ -469,6 +502,8 @@ pub struct Field {
     pub name: Option<String>,
     pub source_name: Option<String>,
     pub when: Option<String>,
+    pub repeat: Option<Repeat>,
+    pub fields: Option<Vec<Field>>,
     pub offset: Option<usize>,
     pub length: Option<Length>,
     #[serde(rename = "type")]
@@ -581,6 +616,7 @@ pub struct Dataset {
     #[serde(default, deserialize_with = "checks")]
     pub after: Vec<Check>,
     pub csv: Option<Csv>,
+    pub apache: Option<Apache>,
     pub fixed: Option<Fixed>,
     pub lines: Option<Lines>,
     pub rdw: Option<Rdw>,
@@ -813,6 +849,28 @@ pub fn identifier(name: &str) -> bool {
     matches!(chars.next(), Some(b'a'..=b'z'))
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
 }
+fn field_origins(fields: &mut [Field], raw: &[Node]) {
+    for (field, raw) in fields.iter_mut().zip(raw) {
+        field.origin = Some(raw.origin.clone());
+        if let Kind::Mapping(map) = &raw.kind {
+            field.origins = map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.origin.clone()))
+                .collect();
+        }
+        field.timezone_set = raw.get("timezone").is_some();
+        if let (
+            Some(children),
+            Some(Node {
+                kind: Kind::Sequence(raw_children),
+                ..
+            }),
+        ) = (&mut field.fields, raw.get("fields"))
+        {
+            field_origins(children, raw_children);
+        }
+    }
+}
 fn datasets(node: &Node, output: bool, documentation: bool) -> Result<Vec<Dataset>> {
     let Kind::Sequence(seq) = &node.kind else {
         return Err(Error::config("expected array").context(&node.origin));
@@ -901,22 +959,16 @@ fn datasets(node: &Node, output: bool, documentation: bool) -> Result<Vec<Datase
                 ..
             }) = n.get("fields")
             {
-                for (field, raw) in d.fields.iter_mut().zip(fields) {
-                    field.origin = Some(raw.origin.clone());
-                    if let Kind::Mapping(m) = &raw.kind {
-                        field.origins = m
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.origin.clone()))
-                            .collect();
-                    }
-                    field.timezone_set = raw.get("timezone").is_some();
-                }
+                field_origins(&mut d.fields, fields);
             }
             if !identifier(&d.id) {
                 return Err(Error::config("invalid dataset id").context(&n.origin));
             }
             if output && d.sql.is_none() {
                 return Err(Error::config("output.sql is required").context(&n.origin));
+            }
+            if output && d.format == Format::Apache {
+                return Err(Error::config("apache is an input-only format").context(&n.origin));
             }
             if !output && (d.sql.is_some() || d.mode.is_some()) {
                 return Err(Error::config("sql/mode are output-only").context(&n.origin));

@@ -122,6 +122,7 @@ pub(crate) fn layout(d: &Dataset, result: Option<SchemaRef>) -> Result<RecordLay
         encoding: TextEncoding::UTF_8,
         lines: None,
         conditional: None,
+        repeated: None,
         checks: Default::default(),
     })
 }

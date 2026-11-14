@@ -135,6 +135,7 @@ fn additional(field: &Value) -> String {
                 "offset",
                 "length",
                 "nullable",
+                "fields",
             ]
             .contains(&key.as_str())
         })
@@ -171,15 +172,25 @@ fn fields(out: &mut String, dataset: &Value, output: bool) {
         return;
     };
     out.push_str("| No. | Name | Source name | Type | Offset | Length | Nullable | Additional | Description |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    field_rows(out, fields, output, "", "");
+    out.push('\n');
+}
+
+fn field_rows(out: &mut String, fields: &[Value], output: bool, prefix: &str, number: &str) {
     for (index, field) in fields.iter().enumerate() {
         let name = field
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or("FILLER");
+        let path = format!("{prefix}{name}");
+        let ordinal = format!("{number}{}", index + 1);
+        let children = field.get("fields").and_then(Value::as_array);
         let kind = field
             .get("type")
             .and_then(Value::as_str)
-            .unwrap_or(if name == "FILLER" {
+            .unwrap_or(if children.is_some() {
+                "group"
+            } else if name == "FILLER" {
                 "FILLER"
             } else if output {
                 "Inherited from SQL result"
@@ -189,8 +200,8 @@ fn fields(out: &mut String, dataset: &Value, output: bool) {
         let _ = writeln!(
             out,
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-            index + 1,
-            code(name),
+            ordinal,
+            code(&path),
             item(field, "source_name"),
             code(kind),
             item(field, "offset"),
@@ -199,8 +210,21 @@ fn fields(out: &mut String, dataset: &Value, output: bool) {
             additional(field),
             cell(description(field))
         );
+        if let Some(children) = children {
+            let suffix = if field.get("repeat").is_some() {
+                "[]."
+            } else {
+                "."
+            };
+            field_rows(
+                out,
+                children,
+                output,
+                &format!("{path}{suffix}"),
+                &format!("{ordinal}."),
+            );
+        }
     }
-    out.push('\n');
 }
 
 /// Render the source definition, keeping SQL references and path templates unbound.
@@ -260,14 +284,14 @@ pub fn render(job: &Job, source: &Path) -> String {
                 &mut out,
                 dataset,
                 &[
-                    "id", "fields", "sql", "check", "before", "after", "csv", "fixed", "lines",
-                    "rdw", "parquet", "lua",
+                    "id", "fields", "sql", "check", "before", "after", "csv", "apache", "fixed",
+                    "lines", "rdw", "parquet", "lua",
                 ],
             );
             if dataset.get("path").is_none() {
                 paragraph(&mut out, "path: supplied via the CLI.");
             }
-            for block in ["csv", "fixed", "lines", "rdw", "parquet", "lua"] {
+            for block in ["csv", "apache", "fixed", "lines", "rdw", "parquet", "lua"] {
                 if let Some(options) = dataset.get(block) {
                     let _ = writeln!(out, "#### {} settings\n", code(block));
                     paragraph(&mut out, description(options));

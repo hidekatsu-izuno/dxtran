@@ -1,0 +1,16 @@
+- {name: customer_id, length: 4, description: 顧客コード}
+- {name: item_count, type: uzoned, zone: ascii, length: 2, precision: 2, description: 明細件数}
+- name: monthly_amounts
+  description: 2か月分の金額
+  repeat: 2
+  type: uzoned
+  zone: ascii
+  length: 3
+  precision: 3
+- name: items
+  description: 明細件数に応じた商品と数量の配列
+  repeat: {count_field: item_count, min: 0, max: 3}
+  fields:
+    - {name: code, length: 2, description: 商品コード}
+    - {name: quantity, type: uzoned, zone: ascii, length: 2, precision: 2, description: 数量}
+- {name: trailer, length: 1, description: 配列の後続項目}

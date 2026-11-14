@@ -1,0 +1,20 @@
+- {name: record_type, length: 1}
+- {name: item_count, type: uint-be, length: 1}
+- name: items
+  when: record_type = 'D'
+  repeat: {count_field: item_count, min: 0, max: 3}
+  length: 5
+  fields:
+    - {name: kind, length: 1}
+    - name: text
+      when: kind = 'T'
+      offset: 1
+      length: rest
+      max_length: 4
+    - name: raw
+      when: kind = 'B'
+      offset: 1
+      type: binary
+      length: rest
+      max_length: 4
+- {name: note, length: rest, max_length: 100}

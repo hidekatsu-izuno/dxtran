@@ -8,10 +8,11 @@ python3 examples/generate_docs.py
 python3 examples/generate_docs.py --check
 ```
 
-固定長・行順編成・CSV・RDW・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。正常系と異常系のジョブをまとめて検証できます。加えて、[SQLite の外部テーブル](sqlite/README.md)を LuaJIT のプラグインで読み込む例があります。
+固定長・行順編成・CSV・Apache アクセスログ・RDW・Parquet の変換を、入力ファイル、実行用 YAML、期待ファイルとともに収録しています。正常系と異常系のジョブをまとめて検証できます。加えて、[SQLite の外部テーブル](sqlite/README.md)を LuaJIT のプラグインで読み込む例があります。
 
 | ディレクトリ | 入力 → 出力 | 確認する内容 |
 | --- | --- | --- |
+| [apache](apache/job.yml) / [custom](apache/custom.yml) | Apache Combined / Custom Log → CSV | 引用符・角括弧・エスケープ、NULL、日時変換、集計、カスタムLogFormat、仮想ホスト・処理時間 |
 | [lua_job](lua_job/README.md) | Lua → CSV / Lua | ジョブ共有の `dxt.job`、共有カウンター、任意の開始・終了処理 |
 | [sqlite](sqlite/README.md) | SQLite + CSV → CSV / SQLite | LuaJIT FFI、共有ライブラリの検索 / 直接パス、JOIN・集計、追記・全件置換・UPSERT、64bit整数、NULL・空文字・BLOB |
 | [csv_to_csv](csv_to_csv/job.yml) | CSV → CSV / TSV | 先頭ゼロ、NULL と空文字、引用符・カンマ・項目内改行、最終改行なし、Decimal、真偽値、日付、hex → Base64、列別引用指定 |
@@ -127,6 +128,31 @@ cmp examples/conditional_records/expected/records.rdw examples/conditional_recor
 target/debug/dxt run examples/conditional_records/readback.yml --threads 4
 cmp examples/conditional_records/expected/records.csv examples/conditional_records/out/fixed_readback.csv
 cmp examples/conditional_records/expected/records.csv examples/conditional_records/out/rdw_readback.csv
+```
+
+## repeat で配列を読み書きする
+
+[repeat/job.yml](repeat/job.yml) は、`repeat: 2` の金額配列と、`repeat: {count_field: item_count, min: 0, max: 3}` の商品明細配列を読み込みます。明細が2件と0件の顧客を含みます。SQLの `items[1]['code']` で要素を参照し、`UNNEST(items)` で明細を行に展開します。
+
+固定長では最大3件分の領域を確保し、RDWでは実件数分のみを格納します。配列の後ろの `trailer` も各形式の位置に書き戻します。Parquetには配列と構造体のまま保存します。[readback.yml](repeat/readback.yml) で3形式を読み戻して同じCSVになることを確認できます。
+
+```sh
+mkdir -p examples/repeat/out
+target/debug/dxt check examples/repeat/job.yml --scan
+target/debug/dxt run examples/repeat/job.yml
+cmp examples/repeat/expected/records.rdw examples/repeat/out/records.rdw
+target/debug/dxt run examples/repeat/readback.yml
+cmp examples/repeat/expected/summary.csv examples/repeat/out/rdw_readback.csv
+```
+
+[repeat/conditional.yml](repeat/conditional.yml) は、`when` で明細レコードだけに配列を定義します。各要素は `length: 5` で境界を指定し、種別1バイトと `length: rest` の4バイトからなります。子項目の `when` で文字列／バイナリを選択し、配列の後ろにも `length: rest` の注記を置きます。ヘッダーの配列はNULL、明細0件の配列は空配列になり、注記の空文字とも区別されます。
+
+```sh
+target/debug/dxt check examples/repeat/conditional.yml --scan
+target/debug/dxt run examples/repeat/conditional.yml
+cmp examples/repeat/expected/conditional.rdw examples/repeat/out/conditional.rdw
+target/debug/dxt run examples/repeat/conditional_readback.yml
+cmp examples/repeat/expected/conditional.csv examples/repeat/out/conditional_readback.csv
 ```
 
 ## check で異常終了・ログ出力する

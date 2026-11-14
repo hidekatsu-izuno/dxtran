@@ -1,0 +1,3 @@
+customer_id,item_count,actual_count,second_month,first_code,trailer
+C001,2,2,20,A1,!
+C002,0,0,6,,?

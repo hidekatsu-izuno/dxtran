@@ -36,6 +36,12 @@ impl CompiledField {
         offset: usize,
         encoding: TextEncoding,
     ) -> Result<Self> {
+        if spec.repeat.is_some() || spec.fields.is_some() {
+            return Err(invalid(
+                &spec,
+                "repeat and nested fields must be compiled as a record layout",
+            ));
+        }
         let (kind, length) = validate_storage(&spec, format)?;
         validate_options(&spec, kind, length, format, direction)?;
         let numeric = numeric_layout(&spec, kind, length)?;
@@ -153,7 +159,8 @@ impl CompiledField {
 
 fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<usize>)> {
     let bad = |message: &str| invalid(spec, message);
-    let kind = if spec.name.is_none() && format != Format::Csv {
+    let delimited = matches!(format, Format::Csv | Format::Apache);
+    let kind = if spec.name.is_none() && !delimited {
         FieldType::Filler
     } else {
         FieldType::parse(spec.kind.as_deref().unwrap_or("string"))?
@@ -173,7 +180,7 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
         {
             None
         }
-        None if format == Format::Csv => None,
+        None if delimited => None,
         _ => return Err(bad("invalid or missing length")),
     };
     if length.is_some_and(|n| n > crate::framing::MAX_RECORD) {
@@ -194,16 +201,13 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
         allowed.when = None;
         allowed.origin = None;
         allowed.origins.clear();
-        if format == Format::Csv
-            || format == Format::Rdw && length.is_none()
-            || allowed != Field::default()
-        {
+        if delimited || format == Format::Rdw && length.is_none() || allowed != Field::default() {
             return Err(bad(
                 "FILLER accepts only description, offset, length, fill_byte and when",
             ));
         }
     }
-    if format == Format::Csv {
+    if delimited {
         if spec.when.is_some()
             || spec.length.is_some()
             || spec.offset.is_some()
@@ -213,7 +217,9 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
             || spec.null_output.is_some()
             || spec.max_length.is_some()
         {
-            return Err(bad("physical layout and NULL markers are forbidden in CSV"));
+            return Err(bad(
+                "physical layout and NULL markers are forbidden in CSV/Apache",
+            ));
         }
         if !matches!(
             kind,
@@ -225,7 +231,7 @@ fn validate_storage(spec: &Field, format: Format) -> Result<(FieldType, Option<u
                 | FieldType::Timestamp
                 | FieldType::Binary
         ) {
-            return Err(bad("type is not available for CSV"));
+            return Err(bad("type is not available for CSV/Apache"));
         }
     }
     Ok((kind, length))
@@ -306,8 +312,10 @@ fn validate_options(
     {
         return Err(bad("unit/timezone used on incompatible type"));
     }
-    if spec.binary_encoding.is_some() && !(kind == FieldType::Binary && format == Format::Csv) {
-        return Err(bad("binary_encoding requires CSV binary"));
+    if spec.binary_encoding.is_some()
+        && !(kind == FieldType::Binary && matches!(format, Format::Csv | Format::Apache))
+    {
+        return Err(bad("binary_encoding requires CSV/Apache binary"));
     }
     if spec
         .binary_encoding

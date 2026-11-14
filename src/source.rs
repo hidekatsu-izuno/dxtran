@@ -1,3 +1,4 @@
+mod apache;
 mod batch;
 pub(crate) mod lua;
 mod reader;

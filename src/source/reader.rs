@@ -24,6 +24,7 @@ use std::{fs::File, io::BufReader, sync::Arc};
 
 enum Reader {
     Csv(CsvReader<TextReader<crate::compression::Input>>),
+    Apache(super::apache::ApacheReader<TextReader<crate::compression::Input>>),
     Physical(BufReader<crate::compression::Input>),
     Rdw(framing::rdw::RdwReader<BufReader<crate::compression::Input>>),
     Parquet(Box<crate::parquet_io::Input>),
@@ -108,6 +109,16 @@ impl InputReader {
                 }
             }
             Reader::Csv(reader)
+        } else if dataset.format == Format::Apache {
+            Reader::Apache(super::apache::ApacheReader::new(
+                TextReader::new(
+                    crate::compression::Input::new(file, dataset.compression)
+                        .map_err(|e| Error::input(e.to_string()).context(dataset.path.display()))?,
+                    layout.encoding,
+                ),
+                dataset.apache.clone().unwrap_or_default().compile()?,
+                layout.encoding,
+            ))
         } else if dataset.format == Format::Parquet {
             Reader::Parquet(Box::new(crate::parquet_io::Input::open(
                 dataset,
@@ -200,6 +211,12 @@ impl InputReader {
         };
         match &mut self.reader {
             Reader::Parquet(_) | Reader::Lua(_) => unreachable!("native Arrow batches"),
+            Reader::Apache(reader) => {
+                if !reader.read_record(&mut self.cells).map_err(context)? {
+                    return Ok(false);
+                }
+                self.byte_position = reader.position();
+            }
             Reader::Csv(reader) => {
                 let first_line = reader.line;
                 if !reader.read_record(&mut self.cells).map_err(context)? {
@@ -219,6 +236,7 @@ impl InputReader {
                 record_position = location.byte;
                 self.byte_position = reader.position();
                 if self.layout.conditional.is_none()
+                    && self.layout.repeated.is_none()
                     && (self.body.len() < self.layout.length
                         || !self.layout.rest && self.body.len() != self.layout.length)
                 {
@@ -295,9 +313,14 @@ impl InputReader {
                 self.record_position
             ))
         };
-        if self.dataset.format == Format::Csv {
+        if matches!(self.dataset.format, Format::Csv | Format::Apache) {
             for ((value, was_quoted), field) in self.cells.cells().zip(&self.layout.fields) {
-                let text = if value.is_empty() && !was_quoted {
+                let null = if self.dataset.format == Format::Apache {
+                    !was_quoted
+                } else {
+                    value.is_empty() && !was_quoted
+                };
+                let text = if null {
                     None
                 } else {
                     Some(field.trim_text(value))
@@ -314,8 +337,12 @@ impl InputReader {
         Ok(())
     }
     pub(super) fn row_size_bound(&self) -> usize {
-        if self.dataset.format == Format::Csv {
-            // Decoded strings/binaries cannot exceed their UTF-8 CSV cell size.
+        if self.layout.repeated.is_some() {
+            // Measure nested Arrow values before admitting them to a batch.
+            return usize::MAX;
+        }
+        if matches!(self.dataset.format, Format::Csv | Format::Apache) {
+            // Decoded strings/binaries cannot exceed their UTF-8 cell size.
             return self.row_base_size.saturating_add(self.cells.bytes());
         }
         let mut bound = self.physical_row_bound;

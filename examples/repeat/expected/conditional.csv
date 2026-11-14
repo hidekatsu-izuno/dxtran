@@ -1,0 +1,4 @@
+record_type,item_count,items_absent,actual_count,first_text,second_is_binary,note
+H,0,true,,,false,header
+D,2,false,2,abc ,true,detail
+D,0,false,0,,false,""

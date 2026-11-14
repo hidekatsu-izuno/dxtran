@@ -1,0 +1,6 @@
+|
+  SELECT record_type, item_count, items IS NULL AS items_absent,
+         array_length(items) AS actual_count,
+         items[1]['text'] AS first_text,
+         items[2]['raw'] IS NOT NULL AS second_is_binary, note
+  FROM data

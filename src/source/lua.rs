@@ -87,6 +87,7 @@ pub(crate) fn layout(d: &Dataset) -> Result<RecordLayout> {
         encoding: TextEncoding::UTF_8,
         lines: None,
         conditional: None,
+        repeated: None,
         checks: Default::default(),
     })
 }

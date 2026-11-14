@@ -1,5 +1,23 @@
 [
   {
+    "directory": "apache",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.csv": "expected/records.csv",
+          "out/summary.csv": "expected/summary.csv"
+        }
+      },
+      {
+        "file": "custom.yml",
+        "outputs": {
+          "out/custom.csv": "expected/custom.csv"
+        }
+      }
+    ]
+  },
+  {
     "directory": "validation",
     "jobs": [
       {
@@ -408,6 +426,44 @@
         "absent": [
           "out/cp932.csv"
         ]
+      }
+    ]
+  },
+  {
+    "directory": "repeat",
+    "jobs": [
+      {
+        "file": "job.yml",
+        "outputs": {
+          "out/records.dat": "expected/records.dat",
+          "out/records.rdw": "expected/records.rdw",
+          "out/summary.csv": "expected/summary.csv",
+          "out/details.csv": "expected/details.csv"
+        },
+        "produced": [
+          "out/records.parquet"
+        ]
+      },
+      {
+        "file": "readback.yml",
+        "outputs": {
+          "out/fixed_readback.csv": "expected/summary.csv",
+          "out/rdw_readback.csv": "expected/summary.csv",
+          "out/parquet_readback.csv": "expected/summary.csv"
+        }
+      },
+      {
+        "file": "conditional.yml",
+        "outputs": {
+          "out/conditional.rdw": "expected/conditional.rdw",
+          "out/conditional.csv": "expected/conditional.csv"
+        }
+      },
+      {
+        "file": "conditional_readback.yml",
+        "outputs": {
+          "out/conditional_readback.csv": "expected/conditional.csv"
+        }
       }
     ]
   }

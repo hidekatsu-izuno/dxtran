@@ -1,6 +1,6 @@
 # dxtran
 
-`dxt` は、YAML に定義した CSV・固定長・行順編成（lines）・RDW・Parquet ファイルを Apache DataFusion SQL で変換する Rust 製 CLI です。設計仕様は [docs/SPEC.md](docs/SPEC.md) にあります。
+`dxt` は、YAML に定義した CSV・Apache アクセスログ（入力専用）・固定長・行順編成（lines）・RDW・Parquet ファイルを Apache DataFusion SQL で変換する Rust 製 CLI です。設計仕様は [docs/SPEC.md](docs/SPEC.md) にあります。
 
 ```sh
 cargo build --locked --release
@@ -67,6 +67,17 @@ output:
 ```
 
 `${名前}` の未宣言名・NULL・不正な構文は設定エラーです。文字列として `${名前}` をファイル名に含める場合は `\${名前}` と記述します。YAMLでは `path: 'out/\${名前}.csv'` のように単一引用符を使うと、そのまま書けます。CLIにテンプレートを渡す場合は `'--output.result.path=out_${business_date}.csv'` のように引用して、シェルによる展開を防ぎます。[パス展開の規則](docs/SPEC.md#42-ファイルパスへのパラメーター展開)を参照してください。
+
+Apache アクセスログは `format: apache` で入力できます。`apache: {format: common}` は Common Log Format、`apache: {format: combined}`（省略時の既定値）は Combined Log Format です。`encoding` と、ログの順序で7列（common）または9列（combined）の `fields` を指定します。日時の角括弧とリクエスト・ヘッダーの引用符を外し、Apache のエスケープを復元します。欠損値の `-` は NULL となるため、その列には `nullable: true` を指定してください。gzip / zstd 圧縮入力にも対応します。[Apache → CSV の設定例](examples/apache/job.yml)と[詳細仕様](docs/SPEC.md#621-apache-アクセスログ入力専用)を参照してください。
+
+カスタム形式では `apache.format: custom` と `apache.log_format` に Apache の `LogFormat` 文字列を指定し、`%%` を除く変換指定子の出現順に `fields` を定義します。仮想ホスト・処理時間・任意ヘッダー・日時書式・条件付き指定子を使えます。`%U%q` はパスとクエリーの2列に分けます。[カスタム形式の設定例](examples/apache/custom.yml)を参照してください。
+
+```yaml
+apache:
+  format: custom
+  log_format: '%v %h %t "%r" %>s %b %D'
+# fields は vhost, host, logged_at, request, status, bytes, duration_us の順に7列
+```
 
 CSVの外部ヘッダー名がSQL列名と異なる場合は、`input.fields` に `{name: customer_id, source_name: 顧客コード}` と指定します。SQLでは `customer_id` を参照し、省略時は従来どおり `name` と照合します。`source_name` はヘッダー付きCSV入力専用で、列順・列数も一致させます。
 
@@ -146,6 +157,10 @@ SELECT icu_decode(icu_trim(icu_encode('　日本　', 'cp932'), 'cp932', '　'),
 `encoding` は従来の UTF-8・CP932 等に加え、[jtc-utils](https://docs.rs/jtc-utils/0.2.1/jtc_utils/charset/) の `jef`、`x-fujitsu-ebcdic-ascii`、`x-fujitsu-ebcdic-kana`、`x-fujitsu-ebcdic-lower`、`cp930`、`cp939`、`cp942`、`cp942c`、`cp943c` に対応します。例えば IBM の漢字混在データは `encoding: cp939` と指定します。JEF は2バイトの漢字コード専用で、固定長・RDW の文字項目の埋め文字には `space_char: "　"` を指定してください。CP930 / CP939 の文字項目は SO/SI を含む独立した文字列として扱い、`length` はシフト制御バイトを含むバイト数です。不正なバイト列と変換不能文字はエラーになります。[文字コードの詳細](docs/SPEC.md#65-encoding-の解決と文字コード変換)を参照してください。
 
 fixed / RDW の input/output では、項目に `when: "record_type = 'H'"` のような Boolean の SQL 式を指定し、レコード条件に応じて同じバイト領域を別の項目として扱えます。入力の条件式は `when` のない共通項目、出力の条件式は SQL の結果列を参照します。条件が TRUE の項目だけを読み書きし、非該当の入力列は NULL になります。`AND` / `OR` / `IN` / `IS NULL` やスカラー関数も利用できます。[ヘッダー・明細・トレーラーのサンプル](examples/conditional_records/job.yml)と[詳しい規則](docs/SPEC.md#711-レコード条件付き項目定義)を参照してください。
+
+固定長・lines・RDWの項目に `repeat: 3` を指定すると固定回数の配列、`repeat: {count_field: item_count, min: 0, max: 10}` なら `item_count` の値を回数に使う配列になります。子 `fields` を持つグループの繰り返し・入れ子にも対応し、SQLでは `items[1]['code']` や `UNNEST(items)` で参照できます。fixed / linesは最大回数分の領域を確保し、RDWは実件数分だけを書きます。有効な配列の長さと指定回数の不一致、件数のNULL・範囲外はエラーです。[仕様](docs/SPEC.md#712-repeat-と階層項目)と[変換・読み戻しの例](examples/repeat/job.yml)を参照してください。
+
+配列・グループ・子項目に `when` を指定でき、非該当の項目は入力ではNULL、出力では読み飛ばします。RDWでは配列の後ろに `length: rest` を置けます。繰り返すグループの内部で使う場合は、グループの `length` で1要素の境界を指定します。[条件付き配列と残余項目の例](examples/repeat/conditional.yml)を用意しています。
 
 すべての形式の input/output に `check` を指定できます。`when` の SQL 式が TRUE のレコードに対し、`error` はメッセージを標準エラーへ出して異常終了、`warn` は標準エラーへ出して継続、`info` は標準出力へ出して継続します。入力ではデコード後の全公開列、出力では SQL 結果の列を参照できます。複数のチェックは配列で指定し、記載順に実行します。メッセージは文字列のまま JSON ログに記録します。[継続・異常終了のサンプル](examples/checks/job.yml)を用意しています。
 

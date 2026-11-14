@@ -91,6 +91,9 @@ pub(crate) fn workers(threads: usize, memory_limit: usize) -> usize {
 }
 
 pub(crate) fn worthwhile(layout: &RecordLayout) -> bool {
+    if layout.repeated.is_some() {
+        return false;
+    }
     // A single plain UTF-8/string or binary field is mostly memory/I/O work.
     // Scheduling and buffering made that case slower in the fixed-I/O benchmark.
     !matches!(layout.fields.as_slice(), [field]

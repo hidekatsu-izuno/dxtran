@@ -6,6 +6,8 @@ Each YAML file has a Markdown document with the same name in the same directory.
 
 | YAML | Kind | Documentation |
 | --- | --- | --- |
+| [apache/custom.yml](apache/custom.yml) | Job | [custom.md](apache/custom.md) |
+| [apache/job.yml](apache/job.yml) | Job | [job.md](apache/job.md) |
 | [basic/job.yml](basic/job.yml) | Job | [job.md](basic/job.md) |
 | [binary_fields/job.yml](binary_fields/job.yml) | Job | [job.md](binary_fields/job.md) |
 | [bstring/fields.yml](bstring/fields.yml) | Fragment | [fields.md](bstring/fields.md) |

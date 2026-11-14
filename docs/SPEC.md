@@ -1,10 +1,10 @@
 # dxtran 設計仕様書
 
-状態: 初期設計案 / 仕様版: 0.28 / 作成日: 2026-10-22 / 更新日: 2026-11-07
+状態: 初期設計案 / 仕様版: 0.30 / 作成日: 2026-10-22 / 更新日: 2026-11-13
 
 ## 1. 目的と設計上の前提
 
-dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長、Parquet ファイルを読み込み、Apache DataFusion の SQL で編集・変換し、CSV、固定長、RDW 付き可変長または Parquet ファイルへ出力するバッチ処理ツールとする。複数の入力の結合、抽出、項目追加、型変換、集計、並べ替え、複数形式への出力を、1つの YAML ファイルで定義する。
+dxtran（コマンド名: `dxt`）は、CSV、Apache アクセスログ、固定長、RDW 付き可変長、Parquet ファイルを読み込み、Apache DataFusion の SQL で編集・変換し、CSV、固定長、RDW 付き可変長または Parquet ファイルへ出力するバッチ処理ツールとする。複数の入力の結合、抽出、項目追加、型変換、集計、並べ替え、複数形式への出力を、1つの YAML ファイルで定義する。
 
 項目は YAML に直接定義する。定義の任意の枝は `import` で再利用し、利用側で上書きできる。`process` は WITH 句のように参照する中間データセットを定義し、最終的な編集・集計 SQL は `output` に直接指定できる。順序を明示しなければ、元ファイルのレコード順を維持する。
 
@@ -16,7 +16,7 @@ dxtran（コマンド名: `dxt`）は、CSV、固定長、RDW 付き可変長、
 
 | 分類 | 初期版の対応 |
 | --- | --- |
-| 入力 | CSV、固定長（`fixed`）、RDW 付き可変長（`rdw`）、Parquet（`parquet`）、LuaJIT 外部テーブル（`lua`） |
+| 入力 | CSV、Apache アクセスログ（`apache`）、固定長（`fixed`）、RDW 付き可変長（`rdw`）、Parquet（`parquet`）、LuaJIT 外部テーブル（`lua`） |
 | 編集 | DataFusion SQL による選択、フィルタ、式、結合、集計、ウィンドウ関数 |
 | 出力 | CSV、固定長、RDW 付き可変長、Parquet、LuaJIT 外部テーブル。Parquet / Lua 出力は SQL 結果スキーマを使用 |
 | 定義の再利用 | 任意の枝への `import` と利用側の値による上書き |
@@ -41,7 +41,7 @@ flowchart LR
     I --> V[構文・参照・型の検証]
     I --> L[共通レイアウト]
     V --> P[依存グラフ・SQL 計画]
-    L --> R[CSV / fixed / lines / rdw / parquet Reader]
+    L --> R[CSV / apache / fixed / lines / rdw / parquet Reader]
     R --> A[Arrow RecordBatch]
     A --> D[DataFusion]
     P --> D
@@ -293,14 +293,15 @@ output:
 | キー | 必須 | 意味 |
 | --- | --- | --- |
 | `id` | 必須 | SQL から参照するテーブル名 |
-| `format` | 必須 | `csv`、`fixed`、`lines`、`rdw`、`parquet`、`lua` |
+| `format` | 必須 | `csv`、`apache`（入力専用）、`fixed`、`lines`、`rdw`、`parquet`、`lua` |
 | `path` | 任意 | 入力ファイルのパス。省略時は CLI の `--input.<id>.path` で指定する |
-| `compression` | 任意 | CSV / fixed / lines / rdw のファイル全体の `gzip` / `zstd` 圧縮。省略時は非圧縮。6.7節参照 |
+| `compression` | 任意 | CSV / apache / fixed / lines / rdw のファイル全体の `gzip` / `zstd` 圧縮。省略時は非圧縮。6.7節参照 |
 | `encoding` | parquet / lua 以外で必須 | encoding_rs と jtc-utils が認識する文字コードラベル。6.5節参照。parquet / lua では指定不可 |
-| `fields` | parquet 以外で必須 | CSV は列名・type・NULL 許容、fixed / lines / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
+| `fields` | parquet 以外で必須 | CSV / apache は列名・type・NULL 許容、fixed / lines / rdw はバイト位置・幅等も指定。parquet はファイルのスキーマを使用し、fields を指定しない |
 | `check` | 任意 | レコード条件による異常終了・ログ出力。6.8節参照 |
 | `after` | 任意 | 入力全体の集計チェック。6.8.1節参照 |
 | `csv` | CSV で任意 | ヘッダー・区切り・引用符の設定 |
+| `apache` | apache で任意 | `format: common` / `combined`（既定）/ `custom`、カスタム形式の `log_format`。6.2.1節参照 |
 | `fixed` | fixed で必須 | record_separator と、任意の record_length |
 | `lines` | lines で任意 | line_ending、record_length、trim_trailing_spaces。6.3.1節参照 |
 | `rdw` | rdw で任意 | RDW の最大レコード長等の設定 |
@@ -333,6 +334,63 @@ output:
 | 1列のファイルの `""` | 長さ0の文字列1個のレコード |
 
 CSV 字句解析の結果は `(value, was_quoted)` を持ち、バッチ境界をまたいでも引用状態を保持する。値だけに変換してから空文字を NULL に置き換える処理では、この規則を実装できない。
+
+### 6.2.1 Apache アクセスログ（入力専用）
+
+`format: apache` は Apache HTTP Server の [Common / Combined Log Format](https://httpd.apache.org/docs/2.4/logs.html#accesslog) とカスタムLogFormatを入力する。`apache.format` は `common`・`combined`・`custom` とし、ブロック省略時は `combined`。出力に `format: apache` を指定すると設定エラーになる。
+
+`encoding` と `input.fields` は必須。型推論は行わず、Common / Combined のフィールドは次のログ順に定義する。`name` は任意の有効なSQL列名にできる。common は正確に7列、combined は9列とし、必要な列の選択や並べ替えはSQLで行う。
+
+| 位置 | Apache の項目 | 内容 |
+| --- | --- | --- |
+| 1 | `%h` | クライアントのホスト名またはIPアドレス |
+| 2 | `%l` | ident のユーザー名 |
+| 3 | `%u` | 認証ユーザー名 |
+| 4 | `%t` | 日時。角括弧を外した `10/Oct/2000:13:55:36 -0700` 等の文字列 |
+| 5 | `%r` | 引用符を外したリクエスト行 |
+| 6 | `%>s` | ステータスコード |
+| 7 | `%b` | レスポンスのバイト数 |
+| 8 | `%{Referer}i` | combined のみ。引用符を外した Referer |
+| 9 | `%{User-agent}i` | combined のみ。引用符を外した User-Agent |
+
+- `type` はCSV入力と同じ `string`（既定）・`decimal`・`boolean`・`date`・`time`・`timestamp`・`binary`。ステータスやバイト数を数値として扱う場合は `decimal` を明示する。`length`・`offset`・`when`・FILLER・`source_name`・物理形式のNULLマーカーは指定しない。
+- 日時は既定の `string` で取り込み、`from_unixtime(to_unixtime(logged_at, '%d/%b/%Y:%H:%M:%S %z'))` でタイムゾーンオフセットを解釈してtimestampへ変換できる。
+- 元の値が `-`（引用符内も含む）の場合はNULLにする。該当列は `nullable: true` が必要。`""` は空文字であり、NULLにしない。`\x2d` から復元した文字列 `-` もNULLにしない。NULL判定は trim と型変換の前に行う。
+- [Apache のエスケープ](https://httpd.apache.org/docs/2.4/mod/mod_log_config.html#format-notes)に従い、`\"`・`\\`・`\a`・`\b`・`\f`・`\n`・`\r`・`\t`・`\v`・`\xHH` を復元する。`\xHH` と通常の文字を組み合わせて元のバイト列を復元し、指定した `encoding` でデコードする。不正なエスケープや文字コードは入力エラーとする。
+- 1物理行が1レコード。LF / CRLF と最終改行の省略に対応し、区切りの空白・タブは連続してもよい。フィールド内の改行はエスケープされたものだけを受け入れる。空ファイルは0件、空行・不足列・余分な列・閉じていない引用符や角括弧は入力エラーとする。
+- gzip / zstd は入力直下の `compression` で指定する。BOM処理とストリーム文字コード変換はCSVと共通。デコード後の1行は改行込みで16 MiB以下とし、Arrowバッチも既存の件数・サイズ上限に従う。エラーには入力ID・パス・レコード番号を付け、byte位置はデコード後のUTF-8ストリームの位置を示す。
+
+[実行可能な設定例](../examples/apache/job.yml)を参照。
+
+#### カスタム LogFormat
+
+`apache.format: custom` では `apache.log_format` に、[Apache の LogFormat](https://httpd.apache.org/docs/2.4/mod/mod_log_config.html#formats) の書式文字列を指定する。Apache設定行の `LogFormat` キーワード・書式全体の引用符・ニックネームは含めない。`log_format` は custom のときだけ指定でき、空文字は設定エラーとする。
+
+```yaml
+apache:
+  format: custom
+  log_format: '%v:%p %h %t "%r" %>s %b %D "%{User-Agent}i"'
+fields:
+  - {name: vhost}
+  - {name: port, type: decimal, precision: 5}
+  - {name: host}
+  - {name: logged_at}
+  - {name: request, nullable: true}
+  - {name: status, type: decimal, precision: 3}
+  - {name: bytes, type: decimal, nullable: true}
+  - {name: duration_us, type: decimal}
+  - {name: user_agent, nullable: true}
+```
+
+- `fields` の数は `%%` を除く変換指定子の数と一致させ、出現順に対応させる。同じ指定子を複数回使う場合も別々の列を定義する。日時書式の引数内の `%` は追加の列を作らない。
+- `%h`・`%a`・`%v`・`%r`・`%m`・`%U`・`%q`・`%H`・`%s`・`%>s`・`%b`・`%D` 等の標準指定子、`%{Header}i` / `%{Header}o`、cookie / 環境変数 / note / trailer の指定子を使える。`%{c}a` / `%{c}h`、port・PID・処理時間の引数にも対応する。不明な指定子や不正な引数は設定エラーにする。
+- `%t` の値はApacheが付ける角括弧を外して取り込む。`%{strftime書式}t`・`%{begin:書式}t`・`%{end:書式}t`・`%{msec}t` 等の引数付き日時は、その出力を文字列として取り込む。たとえば `[%{%Y-%m-%d %H:%M:%S}t.%{msec_frac}t]` は日時とミリ秒部分の2列になる。
+- `<` / `>` と、`%200,304...` / `%!200,304...` の条件付き指定子に対応する。ログから条件を再評価せず、記録済みの値を読む。条件非該当の `-` はNULLになる。条件のない `%X` の `-` は接続状態としてそのまま文字列にする。
+- リテラルの引用符・角括弧・記号・日本語・タブ・`%%` を照合し、値の周囲のリテラルは列に含めない。書式内の空白・タブの連続は、入力内の1文字以上の空白またはタブと照合する。書式文字列では実際の引用符・タブに加え `\"`・`\t`・`\\` を使える。改行を含む複数行の書式は扱わない。
+- 原則として変換指定子の間にはリテラルの区切りを置く。区切りなしの `%U%q` はパスとクエリーの境界 `?` を使って2列に分け、クエリーなしは空文字にする。それ以外の隣接する指定子は、境界を確定できないため設定エラーにする。
+- Apacheがエスケープする文字項目はCommon / Combinedと同じ規則で復元する。日時等の非エスケープ項目の値は保持する。型・NULL・encoding・compression・チェック・レコード上限は既存のApache入力と共通。
+
+[カスタム形式の実行例](../examples/apache/custom.yml)を参照。
 
 ### 6.3 fixed の境界
 
@@ -495,7 +553,7 @@ Parquetの読込バッチは最大8,192行とし、フッターの平均非圧�
 
 ### 6.7 gzip / zstd によるファイル全体の圧縮
 
-CSV・fixed・rdw の入力・出力直下で `compression: gzip` または `compression: zstd` を指定できる。省略またはNULLは非圧縮。拡張子での自動判定・圧縮方式の切り替えは行わない。不明な値は設定エラーとする。Parquetのファイル全体をこのキーで圧縮することはできず、Parquet内部の圧縮には出力の `parquet.compression` を使う。
+CSV・fixed・rdw の入力・出力直下、およびapacheの入力直下で `compression: gzip` または `compression: zstd` を指定できる。省略またはNULLは非圧縮。拡張子での自動判定・圧縮方式の切り替えは行わない。不明な値は設定エラーとする。Parquetのファイル全体をこのキーで圧縮することはできず、Parquet内部の圧縮には出力の `parquet.compression` を使う。
 
 ```yaml
 input:
@@ -671,6 +729,65 @@ fixed のレコード長は全項目の最大終端（または同じ値の `fix
 
 ヘッダー・明細・トレーラーの16バイト固定長を CSV・固定長・RDW に出力し、同じ項目定義で読み戻す例を [examples/conditional_records](../examples/conditional_records/job.yml) に収録する。
 
+### 7.1.2 repeat と階層項目
+
+fixed / lines / rdw の項目に `repeat` を指定すると、SQLへ配列の1列として公開する。単項目は `List(項目型)`、`fields` を持つグループは `List(Struct(...))` になる。`repeat` のない名前付きグループも `Struct` として利用できる。グループと繰り返しは入れ子にでき、有効な名前は同じ階層内で一意とする。異なる `when` で同名を定義する場合は、要素型・子項目の型を含む論理型を一致させる。設定名は `repeat` とし、`occurs` は受け付けない。
+
+```yaml
+fields:
+  - {name: customer_id, length: 6}
+  - {name: item_count, type: uzoned, zone: ascii, length: 2, precision: 2}
+  - name: items
+    repeat: {count_field: item_count, min: 0, max: 10}
+    fields:
+      - {name: code, length: 4}
+      - {name: quantity, type: packed, length: 2, precision: 3}
+  - {name: trailer, length: 1}
+```
+
+固定回数は `repeat: 3` のような正の整数とする。可変回数は `{count_field: 項目名, min: 最小回数, max: 最大回数}` とし、`min` の既定は0、`max` は必須の正の整数、`0 <= min <= max` とする。COBOL の `OCCURS DEPENDING ON` のように、レコード内の件数項目の値を繰り返し回数に使える。`count_field` は回数そのものやSQL式ではなく、回数を取得する項目名である。
+
+参照先は、同じグループまたは外側のグループで、配列定義より前に宣言した整数型／scale 0 の10進数項目とする。内側から順に名前を解決する。前方参照、自己参照、別の配列要素への参照、文字列・浮動小数点・小数桁を持つ10進数型は設定エラー。NULL、負数、min未満、max超過は入力／出力エラーとし、切り詰めない。
+
+子項目の `length` は1要素の幅、`offset` はその項目を含むグループの先頭からの相対バイト位置とする。グループの幅は子項目から計算する。グループに正の整数の `length` を指定すると1要素の境界を固定し、各要素の有効な子項目でその幅全体を覆う。グループに指定できる設定は `name` / `description` / `offset` / `length` / `when` / `repeat` / `fields` / `nullable: false`。グループ自体に `type` は指定しない。条件分岐のない階層は物理順に記述し、明示したoffsetは直前項目の最大終端と一致させる。隙間はFILLERで明示する。
+
+- fixed / lines は最大回数分の領域を常に確保し、後続項目は最大領域の直後に置く。入力の未使用要素はデコードせず、SQL配列には実件数分だけを含める。出力の未使用要素はfixed NULL補完と同じ型別既定値、FILLERは指定バイトで埋める。ただし条件付き子項目を含む未使用グループは、条件を評価せず要素全体を `00` で埋める。未使用領域の元バイトは保存しない。`record_length` を指定する場合は最大レイアウト幅に一致させる。
+- rdw は実件数分だけを連続して格納し、後続項目は実際の配列終端から続ける。可変長の項目／グループより後では `offset` を省略する。入れ子の可変長グループも各要素の実長で配置する。条件分岐の先頭など、明示した `offset` がある場合はその位置から再開し、有効な領域の隙間・重複を検証する。本体長と読み取った全項目の長さは一致させる。BDW / spanned と圧縮は通常のRDWと同様に使用できる。
+
+配列の添字は1始まりとし、SQLでは `items[1]['code']`、`array_length(items)` を使う。`UNNEST(items)` は元の行順と要素順を保って明細を行に展開する。CSVへは子項目をSELECTして平坦化するか、UNNESTで行に展開する。Parquetへは配列・構造体のまま保存できる。
+
+```sql
+SELECT customer_id, items[1]['code'] AS first_code FROM orders;
+
+SELECT customer_id, item['code'] AS code, item['quantity'] AS quantity
+FROM (SELECT customer_id, UNNEST(items) AS item FROM orders) expanded;
+```
+
+出力は同じ階層の項目名で対応付け、Structの子項目の並び順は問わない。有効な配列の長さは固定回数または `count_field` の値に厳密に一致させる。出力の件数項目を自動で書き換えたり、不足する有効要素を補ったりしない。有効な配列全体・グループ全体のNULLは出力エラー。0件はNULLでなく空配列とする。単項目の `nullable` は配列要素に適用し、各要素のNULLは既存の入出力規則に従う。`repeat` を持つ `bits` は、名前付きBoolean項目を持つStructの配列とする。
+
+`when` は配列全体、グループ全体、子項目に指定できる。TRUE だけを読み書きし、FALSE / NULL の配列・グループは入力でNULLとなる。出力でも非該当項目の値・件数・配列長を検証せず省略する。ただし `count_field` の参照先が独立した有効項目なら、その項目自体の型・NULL規則は通常どおり検証する。入力条件は同じ階層と外側の階層の無条件項目を参照し、内側の名前を優先する。後に宣言した無条件項目も参照できるが、その位置を求めるために同じ条件の評価が必要になる循環参照は入力エラー。出力条件は各階層のSQL結果の値・型で評価し、条件付き項目の値や配列も参照できる。子項目の `when` でも `${param}` を利用できる。
+
+条件付き領域の配置は7.1.1節の規則に従う。fixed / lines は非該当項目の領域を別の有効項目・FILLERで覆う。RDWで `offset` を省略した後続項目は、直前の可変長項目の実終端を使い、非該当の可変長項目の消費長は0とする。固定幅項目の定義上の終端は非該当でも変わらない。同時に有効な領域の隙間・重複と同名項目の重複はエラーとする。
+
+`length: rest` はRDWで使用でき、可変件数配列の後ろや、最後のグループ内にも置ける。現在の項目位置から、最も内側の `length` 指定グループの末尾（指定がなければレコード本体末尾）までを消費する。その境界内で最後の有効項目とし、長さ0も空文字／空バイト列として扱う。従来の `max_length`、trim、NULL規則も適用する。
+
+`length: rest` を含むグループを複数回繰り返す場合は、境界が決まるようにグループへ `length` を指定する。たとえば以下は、1要素6バイトのうち `code` の後の4バイトを `payload` として読む。境界指定なしで残余項目を複数回繰り返す定義は設定エラー（固定回数または `max` が1なら使用可能）。
+
+```yaml
+- name: items
+  when: record_type = 'D'
+  repeat: {count_field: item_count, max: 10}
+  length: 6
+  fields:
+    - {name: code, length: 2}
+    - {name: payload, length: rest, max_length: 4}
+- {name: note, length: rest}
+```
+
+入出力の `check` や集計チェックは配列項目にも使用できる。CSV / Luaの項目定義に `repeat` / 子 `fields` は指定できない。ネストは最大32階層とし、最大物理幅は16 MiBおよびRDWの設定上限以内、デコード中の一時展開量とデコード後の1レコードも16 MiB以内に制限する。
+
+[固定回数と可変回数、明細展開、固定長・RDW・Parquetへの出力と読み戻しの例](../examples/repeat/job.yml)、[条件付き配列と要素内・配列後方の残余項目の例](../examples/repeat/conditional.yml)を用意する。
+
 ### 7.2 項目の補助設定
 
 | キー | 意味 |
@@ -678,6 +795,8 @@ fixed のレコード長は全項目の最大終端（または同じ値の `fix
 | `name` | 公開列名。bits では領域の識別名とし、子ビットの name を列名にする。FILLER は省略 |
 | `source_name` | ヘッダー付きCSV入力の外部列名。省略時は `name`。列順は `fields` の順と完全一致させる |
 | `when` | fixed / lines / rdw のレコード条件を表す Boolean の SQL 式。7.1.1節を参照 |
+| `repeat` | 固定回数の正の整数、または `{count_field: 項目名, min: 0, max: 最大回数}`。7.1.2節を参照 |
+| `fields` | グループの子項目の配列。繰り返しの有無に応じてStructまたはList(Struct)として公開 |
 | `offset` | 0始まりの本体内バイト位置。省略時は前項目に続ける |
 | `length` | 正のバイト長。rdw の末尾の `string` / `bstring` / `binary` は `rest` も可。CSV では指定しない |
 | `type` | 7.3節の列挙値。入力・固定幅レイアウトの既定は `string`。CSV の output.fields では省略時に SQL の結果型を引き継ぐ |
@@ -1231,7 +1350,7 @@ JOIN や集計で NULL が生じ得るため、入力の非 NULL 制約が出力
 
 文字列の Utf8 / Utf8View、固定幅と可変長のバイト配列等の内部表現の差によって、利用者向けの `type` 名を増やさない。`binary` の Reader は Binary として公開し、fixed のバイト幅はレイアウトで検証する。SQL が生成した FixedSizeBinary 等も Writer で受け付け、必要に応じて Binary に正規化する。[Arrow: Data types](https://arrow.apache.org/docs/format/Columnar.html#data-types)
 
-List / Struct / Map は、繰り返し・階層を扱う段階で検討する。38桁を超える10進数が必要なら、既存の10進数系の `precision` を最大76へ広げ、精度に応じて Decimal128 / Decimal256 を選ぶ案を優先する。この精度拡張は本仕様の初期版の範囲には含めない。[DataFusion: Numeric types](https://datafusion.apache.org/user-guide/sql/data_types.html#numeric-types)
+物理レイアウトの繰り返しはList、グループはStructとして扱い、7.1.2節の規則に従う。Mapの物理レイアウトは対象外。38桁を超える10進数が必要なら、既存の10進数系の `precision` を最大76へ広げ、精度に応じて Decimal128 / Decimal256 を選ぶ案を優先する。この精度拡張は本仕様の初期版の範囲には含めない。[DataFusion: Numeric types](https://datafusion.apache.org/user-guide/sql/data_types.html#numeric-types)
 
 NULL は各 Arrow 型の NULL 状態として扱い、利用者向けの NULL 専用 `type` は追加しない。ファイル上の NULL 表現は、7.8〜7.9節の規則でその状態との間を変換する。[Arrow: Validity bitmaps](https://arrow.apache.org/docs/format/Columnar.html#validity-bitmaps)
 

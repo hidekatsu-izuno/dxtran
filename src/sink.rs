@@ -85,6 +85,9 @@ impl OutputSink {
         path: &Path,
         result_schema: &datafusion::arrow::datatypes::Schema,
     ) -> Result<Self> {
+        if dataset.format == Format::Apache {
+            return Err(Error::config("apache is an input-only format"));
+        }
         let file = crate::filesystem::create_staging_file(path)
             .map_err(|e| Error::output(e.to_string()).context(path.display()))?;
         let csv = dataset.csv.clone().unwrap_or_default();
@@ -110,6 +113,7 @@ impl OutputSink {
             })
             .collect::<Result<_>>()?;
         let writer = match dataset.format {
+            Format::Apache => unreachable!("input-only format rejected above"),
             Format::Csv => Writer::Csv {
                 writer: TextWriter::new(
                     crate::compression::Output::new(file, dataset.compression)

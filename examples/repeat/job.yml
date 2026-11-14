@@ -1,0 +1,47 @@
+description: 固定回数と件数項目による可変回数の繰り返しを読み書きする
+input:
+  - id: data
+    format: fixed
+    path: data/records.dat
+    encoding: utf-8
+    fixed: {record_length: 25, record_separator: lf}
+    fields: {import: fields.yml}
+    check:
+      when: array_length(items) <> item_count
+      level: error
+      message: 明細件数が一致しません
+output:
+  - id: fixed_result
+    format: fixed
+    path: out/records.dat
+    mode: overwrite
+    encoding: utf-8
+    fixed: {record_length: 25, record_separator: lf}
+    fields: {import: fields.yml}
+    sql: SELECT * FROM data
+  - id: rdw_result
+    format: rdw
+    path: out/records.rdw
+    mode: overwrite
+    encoding: utf-8
+    fields: {import: fields.yml}
+    sql: SELECT * FROM data
+  - id: parquet_result
+    format: parquet
+    path: out/records.parquet
+    mode: overwrite
+    sql: SELECT * FROM data
+  - id: summary
+    format: csv
+    path: out/summary.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: {import: summary.sql.yml}
+  - id: details
+    format: csv
+    path: out/details.csv
+    mode: overwrite
+    encoding: utf-8
+    sql: |
+      SELECT customer_id, item['code'] AS code, item['quantity'] AS quantity
+      FROM (SELECT customer_id, UNNEST(items) AS item FROM data) expanded

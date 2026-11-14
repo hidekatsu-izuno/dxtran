@@ -1,0 +1,4 @@
+host,remote_user,received_at,request,status,bytes,referer,user_agent
+127.0.0.1,frank,2000-10-10T20:55:36Z,GET /apache_pb.gif HTTP/1.0,200,2326,http://example.com/,Browser/1.0 (test)
+192.0.2.1,,2000-10-10T21:00:00Z,GET /missing HTTP/1.1,404,,,"Agent""quoted""\path"
+127.0.0.1,,2000-10-10T21:01:00Z,GET /index.html HTTP/1.1,200,120,"",日本

@@ -175,6 +175,11 @@ impl PhysicalEncoder {
                     ))
                 })?;
             }
+            if let Some(repeated) = &self.layout.repeated {
+                repeated
+                    .encode(batch, row, &mut body)
+                    .map_err(|e| e.context(format!("output {} record {}", self.id, *rows + 1)))?;
+            }
             if let Some(lines) = &self.layout.lines {
                 lines
                     .write(writer, &body)

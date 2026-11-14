@@ -1,0 +1,3 @@
+SELECT customer_id, item_count, array_length(items) AS actual_count,
+       monthly_amounts[2] AS second_month, items[1]['code'] AS first_code, trailer
+FROM data

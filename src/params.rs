@@ -156,6 +156,17 @@ impl VisitorMut for Bind<'_> {
     }
 }
 impl Bind<'_> {
+    fn fields(&mut self, fields: &mut [crate::config::Field]) -> Result<()> {
+        for field in fields {
+            if let Some(when) = &mut field.when {
+                self.expression(when)?;
+            }
+            if let Some(children) = &mut field.fields {
+                self.fields(children)?;
+            }
+        }
+        Ok(())
+    }
     fn expression(&mut self, sql: &mut String) -> Result<()> {
         if !sql.contains('$') {
             return Ok(());
@@ -346,11 +357,7 @@ pub(crate) async fn bind(job: &mut Job, overrides: &[String]) -> Result<()> {
         for checks in [&mut dataset.check, &mut dataset.before, &mut dataset.after] {
             binder.checks(checks)?;
         }
-        for field in &mut dataset.fields {
-            if let Some(when) = &mut field.when {
-                binder.expression(when)?;
-            }
-        }
+        binder.fields(&mut dataset.fields)?;
     }
     for process in &mut job.process {
         binder.query(&mut process.sql)?;
